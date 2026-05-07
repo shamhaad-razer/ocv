@@ -88,4 +88,3 @@ openclaw config set plugins.entries.cloud-relay.config.token "new-token-here"
 - **`Tunnel already connected`**: Another gateway is already connected with the same token. Stop the other one first.
 - **`Connected to relay server` does not appear**: Check your internet connection and confirm the token is saved in `~/.openclaw/openclaw.json`.
 - **Chat page stays offline**: Make sure `openclaw gateway --verbose --force` is still running.
-- **Chat request fails with authorization errors**: Enable chat completions and confirm your local gateway auth token is correct.
