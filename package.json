@@ -1,0 +1,8 @@
+{
+  "name": "openclaw-plugin-cloud-relay",
+  "version": "1.0.0",
+  "private": true,
+  "openclaw": {
+    "extensions": ["./index.js"]
+  }
+}

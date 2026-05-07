@@ -1,0 +1,35 @@
+{
+  "id": "cloud-relay",
+  "name": "Cloud Relay Tunnel",
+  "description": "Connects your local OpenClaw gateway to the cloud relay so browser users can chat through it",
+  "version": "1.0.0",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "relayUrl": {
+        "type": "string",
+        "description": "Cloud relay tunnel URL (e.g. wss://opencl2.prp.razer.com/_tunnel)"
+      },
+      "token": {
+        "type": "string",
+        "description": "JWT auth token from the cloud relay auth server"
+      },
+      "gatewayPort": {
+        "type": "number",
+        "description": "Local gateway port to forward requests to (default: 18789)"
+      },
+      "gatewayToken": {
+        "type": "string",
+        "description": "Local gateway auth token"
+      },
+      "model": {
+        "type": "string",
+        "description": "Model to use for chat completions (default: openclaw/default)"
+      }
+    }
+  }
+}
