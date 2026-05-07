@@ -1,80 +1,91 @@
-# OpenClaw Cloud Relay Plugin
 
-Connect your local OpenClaw gateway to the cloud so others can chat with your AI through a browser.
+## Prerequisites
 
-## Getting Started
+Before installing the plugin, please make sure your local setup is ready:
 
-### 1. Create an account
+- **OpenClaw 5.x.x or later** is required.
 
-Visit [https://opencl2.prp.razer.com](https://opencl2.prp.razer.com) and sign up with a username and password.
+  Check your version with:
 
-### 2. Copy your token
+  ```bash
+  openclaw --version
+  ```
 
-After signing in, click your **username** in the top-right corner and select **Copy Token**.
+- **GitHub SSH access** must be configured, because the plugin is installed from a private GitHub SSH URL.
 
-### 3. Install OpenClaw (skip if already installed)
+  A quick check:
 
-```bash
-# Check if you already have it
-openclaw --version
+  ```bash
+  ssh -T git@github.com
+  ```
 
-# If not installed:
-npm install -g openclaw
-```
+  If GitHub does not recognize your key yet, add your SSH public key to your GitHub account first. The plugin installer needs that little handshake before it can fetch the package.
 
-### 4. Set up the gateway (skip if already onboarded)
+## Quick Start
 
-```bash
-# Check if you already have a config
-ls ~/.openclaw/openclaw.json
+### 1. Install the plugin
 
-# If not set up yet:
-openclaw onboard --non-interactive --accept-risk --mode local --skip-health \
-  --auth-choice openai-api-key --openai-api-key "sk-proj-your-openai-key"
-```
-
-### 5. Install the cloud-relay plugin
+Install the `cloud-relay` plugin:
 
 ```bash
-# Unzip the plugin somewhere, then:
-openclaw plugins install /path/to/cloud-relay
+openclaw plugins install git:git@github.com:shamhaad-razer/razer-relay.git@v0.0.1-alpha
 ```
 
-### 6. Configure
+### 2. Sign in and copy your cloud token
+
+Open:
+
+[https://opencl2.prp.razer.com](https://opencl2.prp.razer.com)
+
+Sign up or log in with your Razer ID. After the page loads, tap or click anywhere on the page once. Then hover over your account name in the top-right corner and choose **Copy Token**.
+
+Keep that token handy. It is the little key that lets your local gateway find its cloud tunnel.
+
+### 3. Save the token into OpenClaw config
+
+Run:
 
 ```bash
 openclaw config set plugins.entries.cloud-relay.config.token "paste-your-token-here"
-openclaw config set gateway.http.endpoints.chatCompletions.enabled true --strict-json
 ```
 
-### 7. Start
+### 4. Start OpenClaw gateway
+
+Run:
 
 ```bash
-openclaw gateway --verbose --force
+openclaw gateway --verbose
 ```
 
-You should see:
+If the tunnel connects successfully, you should see logs like:
+
+```text
+[plugins] [cloud-relay] Connected to relay server
+[plugins] [cloud-relay] Tunnel established!
+[plugins] [cloud-relay]   User:     yourname
+[plugins] [cloud-relay]   Chat URL: https://opencl2.prp.razer.com/chat/yourname
 ```
-[cloud-relay] Tunnel established!
-[cloud-relay]   User:     yourname
-[cloud-relay]   Chat URL: https://opencl2.prp.razer.com/chat/yourname
-```
 
-Open the Chat URL in your browser and start chatting.
+### 5. Return to the web app
 
-## Changing your token
+Return to:
 
-No restart needed — just run:
+[https://opencl2.prp.razer.com](https://opencl2.prp.razer.com)
+
+Wait for the welcome message. Once it appears, your browser is talking to your local OpenClaw gateway through the cloud relay.
+
+## Changing Your Token
+
+If your token expires or you copy a new one, update it with:
 
 ```bash
-openclaw config set plugins.entries.cloud-relay.config.token "new-token"
+openclaw config set plugins.entries.cloud-relay.config.token "new-token-here"
 ```
-
-The plugin picks up the change automatically within 5 seconds.
 
 ## Troubleshooting
 
-- **"No token configured"** — Run step 6 above to set your token.
-- **"Tunnel already connected"** — Another instance is running with the same token. Stop it first.
-- **401 on chat** — Make sure you ran `openclaw config set gateway.http.endpoints.chatCompletions.enabled true --strict-json`.
-- **Gateway not found** — Make sure `openclaw gateway --verbose --force` is running.
+- **`No token configured`**: Set the token with `openclaw config set plugins.entries.cloud-relay.config.token "paste-your-token-here"`.
+- **`Tunnel already connected`**: Another gateway is already connected with the same token. Stop the other one first.
+- **`Connected to relay server` does not appear**: Check your internet connection and confirm the token is saved in `~/.openclaw/openclaw.json`.
+- **Chat page stays offline**: Make sure `openclaw gateway --verbose --force` is still running.
+- **Chat request fails with authorization errors**: Enable chat completions and confirm your local gateway auth token is correct.
