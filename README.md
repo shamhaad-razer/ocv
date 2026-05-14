@@ -28,7 +28,7 @@ Before installing the plugin, please make sure your local setup is ready:
 Install the `cloud-relay` plugin:
 
 ```bash
-openclaw plugins install git:git@github.com:shamhaad-razer/razer-relay.git@v0.0.1-alpha
+openclaw plugins install git:git@github.com:shamhaad-razer/razer-relay.git
 ```
 
 ### Notes for chat-based setup
@@ -70,7 +70,7 @@ If the tunnel connects successfully, you should see logs like:
 [plugins] [cloud-relay] Connected to relay server
 [plugins] [cloud-relay] Tunnel established!
 [plugins] [cloud-relay]   User:     yourname
-[plugins] [cloud-relay]   Chat URL: https://opencl2.prp.razer.com/chat/yourname
+[plugins] [cloud-relay]   Chat URL: https://opencl2.prp.razer.com/
 ```
 
 ### 5. Return to the web app
