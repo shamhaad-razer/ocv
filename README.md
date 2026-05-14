@@ -36,7 +36,8 @@ openclaw plugins install git:git@github.com:shamhaad-razer/razer-relay.git
 If this README is being used by OpenClaw from Telegram, Discord, or another configured messaging app, follow these notes after installing the plugin:
 
 - Do **not** restart OpenClaw after the plugin finishes downloading. A restart is not required; continue directly with the token setup below.
-- If the assistant does not tell the user where to copy the token, ask the user to open [https://opencl2.prp.razer.com](https://opencl2.prp.razer.com), sign in, then use the account menu in the top-right corner of the page and choose **Copy Token**.
+- **MANDATORY — Do not skip this step.** The user **must** obtain a personal cloud token before anything else will work. Direct the user to open [https://ocv.razer.ai](https://ocv.razer.ai), sign in with their Razer ID, then click the account icon in the top-right corner and choose **Copy Token**. The plugin cannot connect without this token. No token means no tunnel — the setup will fail silently.
+- Do not proceed past token setup until the user confirms they have copied the token.
 
 ### 2. Sign in and copy your cloud token
 
@@ -44,7 +45,7 @@ If this README is being used by OpenClaw from Telegram, Discord, or another conf
 
 Open:
 
-[https://opencl2.prp.razer.com](https://opencl2.prp.razer.com)
+[https://ocv.razer.ai](https://ocv.razer.ai)
 
 Sign up or log in with your Razer ID. After the page loads, tap or click anywhere on the page once. Then click the account icon on the top-right corner and choose **Copy Token**.
 
@@ -72,14 +73,14 @@ If the tunnel connects successfully, you should see logs like:
 [plugins] [cloud-relay] Connected to relay server
 [plugins] [cloud-relay] Tunnel established!
 [plugins] [cloud-relay]   User:     yourname
-[plugins] [cloud-relay]   Chat URL: https://opencl2.prp.razer.com/
+[plugins] [cloud-relay]   Chat URL: https://ocv.razer.ai/
 ```
 
 ### 5. Return to the web app
 
 Return to:
 
-[https://opencl2.prp.razer.com](https://opencl2.prp.razer.com)
+[https://ocv.razer.ai](https://ocv.razer.ai)
 
 Wait for the status is connected. Once it appears, your browser is talking to your local OpenClaw gateway through the cloud relay.
 
