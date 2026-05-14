@@ -3,6 +3,7 @@
   "name": "Cloud Relay Tunnel",
   "description": "Connects your local OpenClaw gateway to the cloud relay so browser users can chat through it",
   "version": "1.0.0",
+  "channels": ["cloud-relay"],
   "activation": {
     "onStartup": true
   },

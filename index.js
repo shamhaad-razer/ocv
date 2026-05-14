@@ -207,6 +207,12 @@ module.exports = {
         return;
       }
 
+      // Extract voice system prompt from relay if present
+      const systemMsg = messages.find((m) => m.role === "system");
+      const voicePrefix = systemMsg
+        ? `[${systemMsg.content}]\n\n`
+        : "";
+
       const agentId = resolveDefaultAgentId();
 
       const sessionKey = channelRuntime.routing.buildAgentSessionKey({
@@ -221,7 +227,7 @@ module.exports = {
       const ctxPayload = {
         SessionKey: sessionKey,
         Body: text,
-        BodyForAgent: text,
+        BodyForAgent: voicePrefix + text,
         From: `${CHANNEL_ID}:${userId}`,
         CommandAuthorized: true,
       };
@@ -248,6 +254,7 @@ module.exports = {
         cfg: currentCfg,
         dispatcherOptions: {
           deliver: async (block) => {
+            log.info(`[cloud-relay] deliver block: text="${(block.text || "").slice(0, 80)}" len=${(block.text || "").length}`);
             lastText = block.text || lastText;
             const sseChunk = `data: ${JSON.stringify({
               id: `chatcmpl-${randomUUID()}`,
@@ -264,6 +271,56 @@ module.exports = {
               error: { message: err?.message || "Unknown error", type: "server_error" },
             })}\n\n`;
             safeSend({ type: "response-chunk", requestId: msg.requestId, data: Buffer.from(errChunk).toString("base64") });
+          },
+        },
+        replyOptions: {
+          onToolStart: async (payload) => {
+            log.info(`[cloud-relay] onToolStart: name=${payload.name} phase=${payload.phase}`);
+            safeSend({
+              type: "gateway.event",
+              event: "activity",
+              payload: { type: "tool_start", name: payload.name, phase: payload.phase, args: payload.args },
+            });
+          },
+          onItemEvent: async (payload) => {
+            log.info(`[cloud-relay] onItemEvent: kind=${payload.kind} title=${payload.title} phase=${payload.phase}`);
+            safeSend({
+              type: "gateway.event",
+              event: "activity",
+              payload: { type: "item", kind: payload.kind, title: payload.title, name: payload.name, phase: payload.phase, status: payload.status, summary: payload.summary, progressText: payload.progressText },
+            });
+          },
+          onPlanUpdate: async (payload) => {
+            log.info(`[cloud-relay] onPlanUpdate: phase=${payload.phase} title=${payload.title}`);
+            safeSend({
+              type: "gateway.event",
+              event: "activity",
+              payload: { type: "plan", phase: payload.phase, title: payload.title, explanation: payload.explanation, steps: payload.steps },
+            });
+          },
+          onCommandOutput: async (payload) => {
+            log.info(`[cloud-relay] onCommandOutput: name=${payload.name} exit=${payload.exitCode}`);
+            safeSend({
+              type: "gateway.event",
+              event: "activity",
+              payload: { type: "command_output", phase: payload.phase, title: payload.title, name: payload.name, status: payload.status, exitCode: payload.exitCode },
+            });
+          },
+          onApprovalEvent: async (payload) => {
+            log.info(`[cloud-relay] onApprovalEvent: phase=${payload.phase} title=${payload.title}`);
+            safeSend({
+              type: "gateway.event",
+              event: "activity",
+              payload: { type: "approval", phase: payload.phase, title: payload.title, command: payload.command, reason: payload.reason, message: payload.message },
+            });
+          },
+          onPatchSummary: async (payload) => {
+            log.info(`[cloud-relay] onPatchSummary: name=${payload.name} added=${payload.added?.length} modified=${payload.modified?.length}`);
+            safeSend({
+              type: "gateway.event",
+              event: "activity",
+              payload: { type: "patch", phase: payload.phase, title: payload.title, name: payload.name, added: payload.added, modified: payload.modified, deleted: payload.deleted, summary: payload.summary },
+            });
           },
         },
       });

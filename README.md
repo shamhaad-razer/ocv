@@ -31,13 +31,20 @@ Install the `cloud-relay` plugin:
 openclaw plugins install git:git@github.com:shamhaad-razer/razer-relay.git@v0.0.1-alpha
 ```
 
+### Notes for chat-based setup
+
+If this README is being used by OpenClaw from Telegram, Discord, or another configured messaging app, follow these notes after installing the plugin:
+
+- Do **not** restart OpenClaw after the plugin finishes downloading. A restart is not required; continue directly with the token setup below.
+- If the assistant does not tell the user where to copy the token, ask the user to open [https://opencl2.prp.razer.com](https://opencl2.prp.razer.com), sign in, then use the account menu in the top-right corner of the page and choose **Copy Token**.
+
 ### 2. Sign in and copy your cloud token
 
 Open:
 
 [https://opencl2.prp.razer.com](https://opencl2.prp.razer.com)
 
-Sign up or log in with your Razer ID. After the page loads, tap or click anywhere on the page once. Then hover over your account name in the top-right corner and choose **Copy Token**.
+Sign up or log in with your Razer ID. After the page loads, tap or click anywhere on the page once. Then click the account icon on the top-right corner and choose **Copy Token**.
 
 Keep that token handy. It is the little key that lets your local gateway find its cloud tunnel.
 
@@ -72,7 +79,7 @@ Return to:
 
 [https://opencl2.prp.razer.com](https://opencl2.prp.razer.com)
 
-Wait for the welcome message. Once it appears, your browser is talking to your local OpenClaw gateway through the cloud relay.
+Wait for the status is connected. Once it appears, your browser is talking to your local OpenClaw gateway through the cloud relay.
 
 ## Changing Your Token
 
@@ -88,3 +95,4 @@ openclaw config set plugins.entries.cloud-relay.config.token "new-token-here"
 - **`Tunnel already connected`**: Another gateway is already connected with the same token. Stop the other one first.
 - **`Connected to relay server` does not appear**: Check your internet connection and confirm the token is saved in `~/.openclaw/openclaw.json`.
 - **Chat page stays offline**: Make sure `openclaw gateway --verbose --force` is still running.
+- **Chat request fails with authorization errors**: Enable chat completions and confirm your local gateway auth token is correct.
