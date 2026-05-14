@@ -40,13 +40,15 @@ If this README is being used by OpenClaw from Telegram, Discord, or another conf
 
 ### 2. Sign in and copy your cloud token
 
+> **Important:** The cloud relay will not work without a valid token. You **must** sign in to the web app and copy your personal token before proceeding. Without it, the gateway cannot authenticate and the tunnel will not connect.
+
 Open:
 
 [https://opencl2.prp.razer.com](https://opencl2.prp.razer.com)
 
 Sign up or log in with your Razer ID. After the page loads, tap or click anywhere on the page once. Then click the account icon on the top-right corner and choose **Copy Token**.
 
-Keep that token handy. It is the little key that lets your local gateway find its cloud tunnel.
+Keep that token handy. It is the little key that lets your local gateway find its cloud tunnel. Every user needs their own token — tokens cannot be shared between accounts.
 
 ### 3. Save the token into OpenClaw config
 
