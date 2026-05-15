@@ -10,14 +10,6 @@ Cloud relay plugin for OpenClaw — connects your local gateway to the web app t
   openclaw --version
   ```
 
-- **GitHub SSH access** (the plugin installs from a private SSH URL)
-
-  ```bash
-  ssh -T git@github.com
-  ```
-
-  If GitHub does not recognize your key, add your SSH public key to your GitHub account before continuing.
-
 ## Quick Start
 
 ### 1. Install the plugin
