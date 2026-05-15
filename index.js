@@ -1,6 +1,6 @@
 const { randomUUID } = require("node:crypto");
 
-const DEFAULT_RELAY_URL = "wss://opencl2.prp.razer.com/_tunnel";
+const DEFAULT_RELAY_URL = "wss://ocv.razer.ai/_tunnel";
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
 const HEARTBEAT_INTERVAL_MS = 30000;
 const CHANNEL_ID = "cloud-relay";
@@ -59,7 +59,7 @@ module.exports = {
       if (!token) {
         connecting = false;
         log.warn("[cloud-relay] No token configured.");
-        log.warn("[cloud-relay] 1. Sign in at https://opencl2.prp.razer.com and copy your token");
+        log.warn("[cloud-relay] 1. Sign in at https://ocv.razer.ai and copy your token");
         log.warn('[cloud-relay] 2. Add it to ~/.openclaw/openclaw.json:');
         log.warn('[cloud-relay]    plugins.entries.cloud-relay.config.token = "your-token"');
         return;

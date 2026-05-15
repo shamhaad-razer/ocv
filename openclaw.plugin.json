@@ -13,7 +13,7 @@
     "properties": {
       "relayUrl": {
         "type": "string",
-        "description": "Cloud relay tunnel URL (e.g. wss://opencl2.prp.razer.com/_tunnel)"
+        "description": "Cloud relay tunnel URL (e.g. wss://ocv.razer.ai/_tunnel)"
       },
       "token": {
         "type": "string",
