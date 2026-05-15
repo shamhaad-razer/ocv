@@ -14,8 +14,6 @@ module.exports = {
     const log = api.logger || { info: console.log, warn: console.warn, error: console.error };
     let stopped = false;
 
-    // --- Config resolution ---
-
     function pluginConfig() {
       return api.config?.plugins?.entries?.["cloud-relay"]?.config || api.config || {};
     }
@@ -34,8 +32,6 @@ module.exports = {
       return defaultAgent?.id || agents[0]?.id || "default";
     }
 
-    // --- State ---
-    let runtimeApi = api;
     let channelRuntime = null;
     let currentCfg = null;
     let ws = null;
@@ -48,7 +44,32 @@ module.exports = {
     let username = null;
 
     // ============================================================
-    // Cloud Relay WebSocket Connection
+    // Lifecycle Helpers
+    // ============================================================
+
+    function teardown() {
+      stopped = true;
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      if (tokenPollTimer) { clearInterval(tokenPollTimer); tokenPollTimer = null; }
+      if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+      if (ws) { ws.close(1000, "shutdown"); ws = null; }
+    }
+
+    function startHeartbeat() {
+      if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+      heartbeatTimer = setInterval(() => safeSend({ type: "ping", ts: Date.now() }), HEARTBEAT_INTERVAL_MS);
+    }
+
+    function safeSend(msg) {
+      try {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+      } catch (err) {
+        log.warn(`[cloud-relay] safeSend failed: ${err.message}`);
+      }
+    }
+
+    // ============================================================
+    // WebSocket Connection
     // ============================================================
 
     function connect() {
@@ -60,7 +81,7 @@ module.exports = {
         connecting = false;
         log.warn("[cloud-relay] No token configured.");
         log.warn("[cloud-relay] 1. Sign in at https://ocv.razer.ai and copy your token");
-        log.warn('[cloud-relay] 2. Add it to ~/.openclaw/openclaw.json:');
+        log.warn("[cloud-relay] 2. Add it to ~/.openclaw/openclaw.json:");
         log.warn('[cloud-relay]    plugins.entries.cloud-relay.config.token = "your-token"');
         return;
       }
@@ -115,7 +136,7 @@ module.exports = {
         log.info(`[cloud-relay] Disconnected: ${event.code} ${event.reason || ""}`);
         ws = null;
         connecting = false;
-        stopHeartbeat();
+        if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
         if (event.code === 4003 || event.code === 4001) {
           stopped = true;
           return;
@@ -127,21 +148,6 @@ module.exports = {
         if (ws !== thisWs) return;
         log.warn("[cloud-relay] WebSocket error");
       });
-    }
-
-    function safeSend(msg) {
-      try {
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
-      } catch {}
-    }
-
-    function startHeartbeat() {
-      stopHeartbeat();
-      heartbeatTimer = setInterval(() => safeSend({ type: "ping", ts: Date.now() }), HEARTBEAT_INTERVAL_MS);
-    }
-
-    function stopHeartbeat() {
-      if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     }
 
     function scheduleReconnect() {
@@ -163,17 +169,19 @@ module.exports = {
             stopped = false;
             if (ws) { ws.close(1000, "token changed"); ws = null; }
             connecting = false;
-            stopHeartbeat();
+            if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
             if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
             reconnectAttempt = 0;
             connect();
           }
-        } catch {}
+        } catch (err) {
+          log.warn(`[cloud-relay] Token poll error: ${err.message}`);
+        }
       }, 5000);
     }
 
     // ============================================================
-    // Incoming Request Handler (SDK dispatch)
+    // Chat Dispatch
     // ============================================================
 
     function handleIncomingRequest(msg) {
@@ -193,6 +201,39 @@ module.exports = {
       });
     }
 
+    function buildReplyOptions(requestId) {
+      function forwardEvent(type, payload) {
+        safeSend({ type: "gateway.event", event: "activity", payload: { type, ...payload } });
+      }
+
+      return {
+        onToolStart: async (p) => {
+          log.info(`[cloud-relay] onToolStart: name=${p.name} phase=${p.phase}`);
+          forwardEvent("tool_start", { name: p.name, phase: p.phase, args: p.args });
+        },
+        onItemEvent: async (p) => {
+          log.info(`[cloud-relay] onItemEvent: kind=${p.kind} title=${p.title} phase=${p.phase}`);
+          forwardEvent("item", { kind: p.kind, title: p.title, name: p.name, phase: p.phase, status: p.status, summary: p.summary, progressText: p.progressText });
+        },
+        onPlanUpdate: async (p) => {
+          log.info(`[cloud-relay] onPlanUpdate: phase=${p.phase} title=${p.title}`);
+          forwardEvent("plan", { phase: p.phase, title: p.title, explanation: p.explanation, steps: p.steps });
+        },
+        onCommandOutput: async (p) => {
+          log.info(`[cloud-relay] onCommandOutput: name=${p.name} exit=${p.exitCode}`);
+          forwardEvent("command_output", { phase: p.phase, title: p.title, name: p.name, status: p.status, exitCode: p.exitCode });
+        },
+        onApprovalEvent: async (p) => {
+          log.info(`[cloud-relay] onApprovalEvent: phase=${p.phase} title=${p.title}`);
+          forwardEvent("approval", { phase: p.phase, title: p.title, command: p.command, reason: p.reason, message: p.message });
+        },
+        onPatchSummary: async (p) => {
+          log.info(`[cloud-relay] onPatchSummary: name=${p.name} added=${p.added?.length} modified=${p.modified?.length}`);
+          forwardEvent("patch", { phase: p.phase, title: p.title, name: p.name, added: p.added, modified: p.modified, deleted: p.deleted, summary: p.summary });
+        },
+      };
+    }
+
     async function dispatchChat(msg) {
       const incoming = JSON.parse(Buffer.from(msg.body, "base64").toString());
       const messages = incoming.messages || [];
@@ -207,11 +248,8 @@ module.exports = {
         return;
       }
 
-      // Extract voice system prompt from relay if present
       const systemMsg = messages.find((m) => m.role === "system");
-      const voicePrefix = systemMsg
-        ? `[${systemMsg.content}]\n\n`
-        : "";
+      const voicePrefix = systemMsg ? `[${systemMsg.content}]\n\n` : "";
 
       const agentId = resolveDefaultAgentId();
 
@@ -241,7 +279,6 @@ module.exports = {
         },
       });
 
-      // Stream response back using SSE format (compatible with existing relay protocol)
       safeSend({ type: "response-start", requestId: msg.requestId,
         statusCode: 200,
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache", "connection": "keep-alive" } });
@@ -273,56 +310,7 @@ module.exports = {
             safeSend({ type: "response-chunk", requestId: msg.requestId, data: Buffer.from(errChunk).toString("base64") });
           },
         },
-        replyOptions: {
-          onToolStart: async (payload) => {
-            log.info(`[cloud-relay] onToolStart: name=${payload.name} phase=${payload.phase}`);
-            safeSend({
-              type: "gateway.event",
-              event: "activity",
-              payload: { type: "tool_start", name: payload.name, phase: payload.phase, args: payload.args },
-            });
-          },
-          onItemEvent: async (payload) => {
-            log.info(`[cloud-relay] onItemEvent: kind=${payload.kind} title=${payload.title} phase=${payload.phase}`);
-            safeSend({
-              type: "gateway.event",
-              event: "activity",
-              payload: { type: "item", kind: payload.kind, title: payload.title, name: payload.name, phase: payload.phase, status: payload.status, summary: payload.summary, progressText: payload.progressText },
-            });
-          },
-          onPlanUpdate: async (payload) => {
-            log.info(`[cloud-relay] onPlanUpdate: phase=${payload.phase} title=${payload.title}`);
-            safeSend({
-              type: "gateway.event",
-              event: "activity",
-              payload: { type: "plan", phase: payload.phase, title: payload.title, explanation: payload.explanation, steps: payload.steps },
-            });
-          },
-          onCommandOutput: async (payload) => {
-            log.info(`[cloud-relay] onCommandOutput: name=${payload.name} exit=${payload.exitCode}`);
-            safeSend({
-              type: "gateway.event",
-              event: "activity",
-              payload: { type: "command_output", phase: payload.phase, title: payload.title, name: payload.name, status: payload.status, exitCode: payload.exitCode },
-            });
-          },
-          onApprovalEvent: async (payload) => {
-            log.info(`[cloud-relay] onApprovalEvent: phase=${payload.phase} title=${payload.title}`);
-            safeSend({
-              type: "gateway.event",
-              event: "activity",
-              payload: { type: "approval", phase: payload.phase, title: payload.title, command: payload.command, reason: payload.reason, message: payload.message },
-            });
-          },
-          onPatchSummary: async (payload) => {
-            log.info(`[cloud-relay] onPatchSummary: name=${payload.name} added=${payload.added?.length} modified=${payload.modified?.length}`);
-            safeSend({
-              type: "gateway.event",
-              event: "activity",
-              payload: { type: "patch", phase: payload.phase, title: payload.title, name: payload.name, added: payload.added, modified: payload.modified, deleted: payload.deleted, summary: payload.summary },
-            });
-          },
-        },
+        replyOptions: buildReplyOptions(msg.requestId),
       });
 
       if (!hadError) {
@@ -339,14 +327,16 @@ module.exports = {
     }
 
     // ============================================================
-    // Register ChannelPlugin
+    // Channel Registration
     // ============================================================
 
     if (typeof api.registerChannel !== "function") {
       log.warn("[cloud-relay] api.registerChannel not available, starting relay directly (legacy mode)");
       connect();
       watchConfigForTokenChange();
-    } else {
+      process.on("SIGTERM", teardown);
+      return;
+    }
 
     api.registerChannel({
       id: CHANNEL_ID,
@@ -391,7 +381,6 @@ module.exports = {
       gateway: {
         startAccount: async (ctx) => {
           log.info("[cloud-relay] channel startAccount");
-
           stopped = false;
           channelRuntime = ctx.channelRuntime || null;
           currentCfg = ctx.cfg;
@@ -408,11 +397,9 @@ module.exports = {
           return new Promise((resolve) => {
             if (ctx.abortSignal) {
               ctx.abortSignal.addEventListener("abort", () => {
-                stopped = true;
-                if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-                if (tokenPollTimer) { clearInterval(tokenPollTimer); tokenPollTimer = null; }
-                stopHeartbeat();
-                if (ws) { ws.close(1000, "shutdown"); ws = null; }
+                teardown();
+                channelRuntime = null;
+                currentCfg = null;
                 resolve();
               });
             }
@@ -421,11 +408,7 @@ module.exports = {
 
         stopAccount: async () => {
           log.info("[cloud-relay] channel stopAccount");
-          stopped = true;
-          if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-          if (tokenPollTimer) { clearInterval(tokenPollTimer); tokenPollTimer = null; }
-          stopHeartbeat();
-          if (ws) { ws.close(1000, "shutdown"); ws = null; }
+          teardown();
           channelRuntime = null;
           currentCfg = null;
         },
@@ -448,18 +431,6 @@ module.exports = {
       },
     });
 
-    } // end registerChannel block
-
-    // ============================================================
-    // Graceful Shutdown
-    // ============================================================
-
-    process.on("SIGTERM", () => {
-      stopped = true;
-      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-      if (tokenPollTimer) { clearInterval(tokenPollTimer); tokenPollTimer = null; }
-      stopHeartbeat();
-      if (ws) { ws.close(1000, "shutdown"); ws = null; }
-    });
+    process.on("SIGTERM", teardown);
   },
 };
