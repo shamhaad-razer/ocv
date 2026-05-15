@@ -55,7 +55,7 @@ openclaw config set plugins.entries.cloud-relay.config.token "new-token-here"
 If this README is being consumed by OpenClaw from Telegram, Discord, or another messaging app:
 
 - Install the plugin end-to-end from this README. If a gateway restart or reload is required, perform it via the OpenClaw CLI and verify afterward.
-- Do **not** restart OpenClaw after the plugin finishes downloading. A restart is not required; continue directly with the token setup below.
+- Do not ask the user to manually restart the Gateway; handle Gateway reload/restart yourself and verify afterward.
 - **Do not skip token setup.** Direct the user to obtain their token from [https://ocv.razer.ai](https://ocv.razer.ai) before proceeding. No token means no tunnel — the setup will fail silently.
 - Do not proceed past token setup until the user confirms they have copied the token.
 
@@ -66,5 +66,4 @@ If this README is being consumed by OpenClaw from Telegram, Discord, or another 
 | `No token configured` | Set the token with `openclaw config set plugins.entries.cloud-relay.config.token "..."` |
 | `Tunnel already connected` | Another gateway is using the same token — stop the other instance first |
 | `Connected to relay server` never appears | Check your internet connection and confirm the token is saved in `~/.openclaw/openclaw.json` |
-| Chat page stays offline | Ensure `openclaw gateway --verbose --force` is still running |
 | Authorization errors on chat requests | Enable chat completions and confirm your local gateway auth token is correct |
