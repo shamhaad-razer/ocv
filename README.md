@@ -55,6 +55,7 @@ openclaw config set plugins.entries.cloud-relay.config.token "new-token-here"
 If this README is being consumed by OpenClaw from Telegram, Discord, or another messaging app:
 
 - Install the plugin end-to-end from this README. If a gateway restart or reload is required, perform it via the OpenClaw CLI and verify afterward.
+- Do **not** restart OpenClaw after the plugin finishes downloading. A restart is not required; continue directly with the token setup below.
 - **Do not skip token setup.** Direct the user to obtain their token from [https://ocv.razer.ai](https://ocv.razer.ai) before proceeding. No token means no tunnel — the setup will fail silently.
 - Do not proceed past token setup until the user confirms they have copied the token.
 
