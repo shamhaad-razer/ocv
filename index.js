@@ -26,10 +26,22 @@ module.exports = {
       return pluginConfig().token || "";
     }
 
+    const DEFAULT_AGENT_ID = "main";
+
+    function normalizeAgentId(value) {
+      const normalized = (value ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")
+        .replace(/^-+/g, "")
+        .replace(/-+$/g, "");
+      return normalized || DEFAULT_AGENT_ID;
+    }
+
     function resolveDefaultAgentId() {
-      const agents = currentCfg?.agents?.list || [];
-      const defaultAgent = agents.find((a) => a.default);
-      return defaultAgent?.id || agents[0]?.id || "default";
+      const agents = Array.isArray(currentCfg.agents?.list) ? currentCfg.agents.list : [];
+      const chosen = (agents.find((agent) => agent?.default) ?? agents[0])?.id;
+      return normalizeAgentId(chosen);
     }
 
     let channelRuntime = null;
@@ -187,17 +199,21 @@ module.exports = {
     function handleIncomingRequest(msg) {
       if (!channelRuntime) {
         log.warn("[cloud-relay] channelRuntime not ready, rejecting request");
-        safeSend({ type: "response", requestId: msg.requestId, statusCode: 503,
+        safeSend({
+          type: "response", requestId: msg.requestId, statusCode: 503,
           headers: { "content-type": "text/plain" },
-          body: Buffer.from("Channel not ready").toString("base64") });
+          body: Buffer.from("Channel not ready").toString("base64")
+        });
         return;
       }
 
       dispatchChat(msg).catch((err) => {
         log.error(`[cloud-relay] dispatch error: ${err.message}`);
-        safeSend({ type: "response", requestId: msg.requestId, statusCode: 502,
+        safeSend({
+          type: "response", requestId: msg.requestId, statusCode: 502,
           headers: { "content-type": "text/plain" },
-          body: Buffer.from(`Dispatch failed - ${err.message}`).toString("base64") });
+          body: Buffer.from(`Dispatch failed - ${err.message}`).toString("base64")
+        });
       });
     }
 
@@ -242,9 +258,11 @@ module.exports = {
       const userId = incoming.user || username || "browser-user";
 
       if (!text.trim()) {
-        safeSend({ type: "response", requestId: msg.requestId, statusCode: 400,
+        safeSend({
+          type: "response", requestId: msg.requestId, statusCode: 400,
           headers: { "content-type": "text/plain" },
-          body: Buffer.from("Empty message").toString("base64") });
+          body: Buffer.from("Empty message").toString("base64")
+        });
         return;
       }
 
@@ -279,9 +297,11 @@ module.exports = {
         },
       });
 
-      safeSend({ type: "response-start", requestId: msg.requestId,
+      safeSend({
+        type: "response-start", requestId: msg.requestId,
         statusCode: 200,
-        headers: { "content-type": "text/event-stream", "cache-control": "no-cache", "connection": "keep-alive" } });
+        headers: { "content-type": "text/event-stream", "cache-control": "no-cache", "connection": "keep-alive" }
+      });
 
       let lastText = "";
       let hadError = false;
