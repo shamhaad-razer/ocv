@@ -110,14 +110,23 @@ function teardown(state) {
 
 // src/reply-options.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
-function buildReplyOptions(state, requestId, log) {
+function buildReplyOptions(state, requestId, log, streamState) {
+  let lastPartialText = "";
   function forwardEvent(type, payload) {
     safeSend(state.ws, { type: "gateway.event", event: "activity", payload: { type, ...payload } }, log);
   }
   return {
     onPartialReply: async (payload) => {
-      const delta = payload.text || "";
+      const text = payload.text || "";
+      let delta = text;
+      if (text.startsWith(lastPartialText)) {
+        delta = text.slice(lastPartialText.length);
+      } else if (text === lastPartialText) {
+        return;
+      }
       if (!delta) return;
+      lastPartialText = text;
+      streamState.hadPartial = true;
       const sseChunk = `data: ${JSON.stringify({
         id: `chatcmpl-${randomUUID2()}`,
         object: "chat.completion.chunk",
@@ -244,7 +253,8 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
     statusCode: 200,
     headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" }
   }, log);
-  setActiveRequest({ requestId: msg.requestId, ws: state.ws, log });
+  const streamState = { hadPartial: false, sentFinal: false };
+  setActiveRequest({ requestId: msg.requestId, ws: state.ws, log, streamState });
   let hadError = false;
   await channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
     ctx: ctxPayload,
@@ -252,7 +262,8 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
     dispatcherOptions: {
       deliver: async (block) => {
         const blockText = block.text || "";
-        if (blockText) {
+        if (blockText && !streamState.hadPartial && !streamState.sentFinal) {
+          streamState.sentFinal = true;
           sendSseText(state.ws, msg.requestId, blockText, log);
         }
         return { ok: true };
@@ -269,7 +280,7 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
       }
     },
     replyOptions: {
-      ...buildReplyOptions(state, msg.requestId, log),
+      ...buildReplyOptions(state, msg.requestId, log, streamState),
       sourceReplyDeliveryMode: "normal",
       suppressDefaultToolProgressMessages: true
     }
@@ -402,7 +413,7 @@ async function startGatewayAccount(ctx) {
         clearInterval(state.heartbeatTimer);
         state.heartbeatTimer = null;
       }
-      if (event.code === 4e3 || event.code === 4001 || event.code === 4003) {
+      if (event.code === 4003 || event.code === 4001) {
         state.stopped = true;
         return;
       }
@@ -526,8 +537,13 @@ var outboundAdapter = {
     const text = ctx.text || "";
     const req = getActiveRequest();
     if (req && req.ws && text) {
-      req.log.info(`[cloud-relay] outbound.sendText: len=${text.length} text="${text.slice(0, 80)}"`);
-      sendSseText(req.ws, req.requestId, text, req.log);
+      if (req.streamState?.hadPartial || req.streamState?.sentFinal) {
+        req.log.info(`[cloud-relay] outbound.sendText suppressed after prior text delivery: len=${text.length}`);
+      } else {
+        if (req.streamState) req.streamState.sentFinal = true;
+        req.log.info(`[cloud-relay] outbound.sendText fallback: len=${text.length} text="${text.slice(0, 80)}"`);
+        sendSseText(req.ws, req.requestId, text, req.log);
+      }
     } else {
       console.log(`[cloud-relay] outbound.sendText MISSED: activeRequest=${!!req} text.len=${text.length}`);
     }
