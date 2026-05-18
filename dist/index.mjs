@@ -402,7 +402,7 @@ async function startGatewayAccount(ctx) {
         clearInterval(state.heartbeatTimer);
         state.heartbeatTimer = null;
       }
-      if (event.code === 4003 || event.code === 4001) {
+      if (event.code === 4e3 || event.code === 4001 || event.code === 4003) {
         state.stopped = true;
         return;
       }

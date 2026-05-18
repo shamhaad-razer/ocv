@@ -118,7 +118,7 @@ export async function startGatewayAccount(ctx: GatewayContext): Promise<void> {
       state.ws = null;
       state.connecting = false;
       if (state.heartbeatTimer) { clearInterval(state.heartbeatTimer); state.heartbeatTimer = null; }
-      if (event.code === 4003 || event.code === 4001) {
+      if (event.code === 4000 || event.code === 4001 || event.code === 4003) {
         state.stopped = true;
         return;
       }
