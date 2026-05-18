@@ -1,35 +1,36 @@
 {
   "id": "cloud-relay",
-  "name": "Cloud Relay Tunnel",
-  "description": "Connects your local OpenClaw gateway to the cloud relay so browser users can chat through it",
-  "version": "1.0.1",
+  "kind": "channel",
   "channels": ["cloud-relay"],
-  "activation": {
-    "onStartup": true
+  "name": "Cloud Relay Tunnel",
+  "description": "Browser chat sessions via Cloud Relay tunnel",
+  "channelEnvVars": {
+    "cloud-relay": ["CLOUD_RELAY_TOKEN"]
   },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {
-      "relayUrl": {
-        "type": "string",
-        "description": "Cloud relay tunnel URL (e.g. wss://ocv.razer.ai/_tunnel)"
+    "properties": {}
+  },
+  "channelConfigs": {
+    "cloud-relay": {
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "token": { "type": "string" },
+          "relayUrl": { "type": "string" }
+        }
       },
-      "token": {
-        "type": "string",
-        "description": "JWT auth token from the cloud relay auth server"
-      },
-      "gatewayPort": {
-        "type": "number",
-        "description": "Local gateway port to forward requests to (default: 18789)"
-      },
-      "gatewayToken": {
-        "type": "string",
-        "description": "Local gateway auth token"
-      },
-      "model": {
-        "type": "string",
-        "description": "Model to use for chat completions (default: openclaw/default)"
+      "uiHints": {
+        "token": {
+          "label": "Relay token",
+          "sensitive": true
+        },
+        "relayUrl": {
+          "label": "Relay URL",
+          "placeholder": "wss://ocv.razer.ai/_tunnel"
+        }
       }
     }
   }

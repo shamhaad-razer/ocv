@@ -1,8 +1,32 @@
 {
-  "name": "openclaw-plugin-cloud-relay",
-  "version": "1.0.1",
+  "name": "@openclaw/cloud-relay",
+  "version": "2026.5.17",
   "private": true,
+  "description": "OpenClaw Cloud Relay tunnel channel plugin",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "exports": {
+    ".": "./dist/index.mjs"
+  },
+  "scripts": {
+    "build": "node build.mjs"
+  },
   "openclaw": {
-    "extensions": ["./index.js"]
+    "extensions": [
+      "./dist/index.mjs"
+    ],
+    "channel": {
+      "id": "cloud-relay",
+      "label": "Cloud Relay",
+      "selectionLabel": "Cloud Relay (Browser)",
+      "detailLabel": "Cloud Relay",
+      "blurb": "Browser chat sessions via Cloud Relay tunnel",
+      "order": 90,
+      "exposure": {
+        "configured": true,
+        "setup": false,
+        "docs": false
+      }
+    }
   }
 }

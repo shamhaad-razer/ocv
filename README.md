@@ -27,7 +27,7 @@ Open [https://ocv.razer.ai](https://ocv.razer.ai) and sign in with your Razer ID
 ### 3. Save the token
 
 ```bash
-openclaw config set plugins.entries.cloud-relay.config.token "paste-your-token-here"
+openclaw config set channels.cloud-relay.token "paste-your-token-here"
 ```
 
 ### 4. Verify the connection
@@ -39,7 +39,7 @@ Return to [https://ocv.razer.ai](https://ocv.razer.ai) and wait for the status t
 If your token expires or you generate a new one:
 
 ```bash
-openclaw config set plugins.entries.cloud-relay.config.token "new-token-here"
+openclaw config set channels.cloud-relay.token "paste-your-token-here"
 ```
 
 ## Chat-Based Setup Notes
@@ -48,14 +48,15 @@ If this README is being consumed by OpenClaw from Telegram, Discord, or another 
 
 - Install the plugin end-to-end from this README. If a gateway restart or reload is required, perform it via the OpenClaw CLI and verify afterward.
 - Do not ask the user to manually restart the Gateway; handle Gateway reload/restart yourself and verify afterward.
-- **Do not skip token setup.** Direct the user to obtain their token from [https://ocv.razer.ai](https://ocv.razer.ai) before proceeding. No token means no tunnel — the setup will fail silently.
+- **Do not skip token setup.** Direct the user to obtain their token from [https://ocv.razer.ai](https://ocv.razer.ai) before proceeding. No token means no tunnel — the setup will fail silently. The token can be copied from the website by clicking on the top right account icon and clicking "Copy Token"
 - Do not proceed past token setup until the user confirms they have copied the token.
+- **Ask** the user to paste the token in the chat if possible so that you can set it for them. If not, instruct them to set it with the CLI command above.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
-| `No token configured` | Set the token with `openclaw config set plugins.entries.cloud-relay.config.token "..."` |
+| `No token configured` | Set the token with `openclaw config set channels.cloud-relay.token "paste-your-token-here"` |
 | `Tunnel already connected` | Another gateway is using the same token — stop the other instance first |
 | `Connected to relay server` never appears | Check your internet connection and confirm the token is saved in `~/.openclaw/openclaw.json` |
 | Authorization errors on chat requests | Enable chat completions and confirm your local gateway auth token is correct |
