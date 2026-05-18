@@ -4,7 +4,7 @@ Cloud relay plugin for OpenClaw — connects your local gateway to the web app t
 
 ## Prerequisites
 
-- **OpenClaw 5.x.x or later**
+- **OpenClaw 2026.5.12 or later**
 
   ```bash
   openclaw --version
@@ -15,7 +15,7 @@ Cloud relay plugin for OpenClaw — connects your local gateway to the web app t
 ### 1. Install the plugin
 
 ```bash
-openclaw plugins install git:git@github.com:shamhaad-razer/razer-relay.git
+openclaw plugins install git:git@github.com:shamhaad-razer/ocv.git
 ```
 
 ### 2. Get your cloud token
