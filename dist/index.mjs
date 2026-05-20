@@ -110,23 +110,18 @@ function teardown(state) {
 
 // src/reply-options.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
-function buildReplyOptions(state, requestId, log, streamState) {
-  let lastPartialText = "";
+function buildReplyOptions(state, requestId, log) {
   function forwardEvent(type, payload) {
     safeSend(state.ws, { type: "gateway.event", event: "activity", payload: { type, ...payload } }, log);
   }
   return {
     onPartialReply: async (payload) => {
       const text = payload.text || "";
-      let delta = text;
-      if (text.startsWith(lastPartialText)) {
-        delta = text.slice(lastPartialText.length);
-      } else if (text === lastPartialText) {
-        return;
-      }
+      if (!text) return;
+      const prev = getLastSentText();
+      const delta = text.startsWith(prev) ? text.slice(prev.length) : text;
       if (!delta) return;
-      lastPartialText = text;
-      streamState.hadPartial = true;
+      setLastSentText(text);
       const sseChunk = `data: ${JSON.stringify({
         id: `chatcmpl-${randomUUID2()}`,
         object: "chat.completion.chunk",
@@ -165,6 +160,7 @@ function buildReplyOptions(state, requestId, log, streamState) {
 var pluginRuntime = null;
 var gatewayChannelRuntime = null;
 var activeRequest = null;
+var lastSentText = "";
 function setPluginRuntime(rt) {
   pluginRuntime = rt;
 }
@@ -176,12 +172,34 @@ function getActiveRequest() {
 }
 function setActiveRequest(req) {
   activeRequest = req;
+  lastSentText = "";
+}
+function getLastSentText() {
+  return lastSentText;
+}
+function setLastSentText(text) {
+  lastSentText = text;
 }
 function resolveChannelRuntime(ctx) {
   return gatewayChannelRuntime || pluginRuntime?.channel || ctx?.channelRuntime || null;
 }
 
 // src/dispatch.ts
+var dispatchQueueTail = Promise.resolve();
+async function runInDispatchQueue(task) {
+  const previous = dispatchQueueTail;
+  let release;
+  const current = new Promise((resolve2) => {
+    release = resolve2;
+  });
+  dispatchQueueTail = previous.catch(() => void 0).then(() => current);
+  await previous.catch(() => void 0);
+  try {
+    return await task();
+  } finally {
+    release();
+  }
+}
 async function dispatchChat(msg, state, ctx, log, channelRuntime) {
   if (!channelRuntime) {
     log.warn("[cloud-relay] channelRuntime not ready, rejecting request");
@@ -195,11 +213,14 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
     return;
   }
   const incoming = JSON.parse(Buffer.from(msg.body, "base64").toString());
+  const requestId = String(msg.requestId || "unknown");
+  const shortId = requestId.slice(0, 8);
   const messages = incoming.messages || [];
   const lastMessage = messages[messages.length - 1];
   const text = lastMessage?.content || "";
   const userId = incoming.user || state.username || "browser-user";
   if (!text.trim()) {
+    log.warn(`[cloud-relay] dispatchChat empty message: req=${shortId} user=${userId}`);
     safeSend(state.ws, {
       type: "response",
       requestId: msg.requestId,
@@ -213,6 +234,7 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
   const voicePrefix = systemMsg ? `[${systemMsg.content}]
 
 ` : "";
+  const startedAt = Date.now();
   const cfg = ctx.cfg;
   const agentId = resolveDefaultAgentId(cfg);
   const sessionKey = channelRuntime.routing.buildAgentSessionKey({
@@ -238,75 +260,90 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
     ChatType: "direct",
     CommandAuthorized: true
   };
-  log.info(`[cloud-relay] Inbound message ${CHANNEL_ID}:${userId} (direct, ${text.length} chars)`);
-  await channelRuntime.session.recordInboundSession({
-    storePath,
-    sessionKey,
-    ctx: ctxPayload,
-    onRecordError: (err) => {
-      log.warn(`[cloud-relay] session record error: ${err.message}`);
+  return runInDispatchQueue(async () => {
+    await channelRuntime.session.recordInboundSession({
+      storePath,
+      sessionKey,
+      ctx: ctxPayload,
+      onRecordError: (err) => {
+        log.warn(`[cloud-relay] session record error: ${err.message}`);
+      }
+    });
+    safeSend(state.ws, {
+      type: "response-start",
+      requestId: msg.requestId,
+      statusCode: 200,
+      headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" }
+    }, log);
+    const previousRequest = getActiveRequest();
+    if (previousRequest) {
+      log.warn(
+        `[cloud-relay] activeRequest overwrite: newReq=${shortId} previousReq=${String(previousRequest.requestId || "unknown").slice(0, 8)}`
+      );
     }
-  });
-  safeSend(state.ws, {
-    type: "response-start",
-    requestId: msg.requestId,
-    statusCode: 200,
-    headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" }
-  }, log);
-  const streamState = { hadPartial: false, sentFinal: false };
-  setActiveRequest({ requestId: msg.requestId, ws: state.ws, log, streamState });
-  let hadError = false;
-  await channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
-    ctx: ctxPayload,
-    cfg,
-    dispatcherOptions: {
-      deliver: async (block) => {
-        const blockText = block.text || "";
-        if (blockText && !streamState.hadPartial && !streamState.sentFinal) {
-          streamState.sentFinal = true;
-          sendSseText(state.ws, msg.requestId, blockText, log);
-        }
-        return { ok: true };
-      },
-      onError: (err) => {
-        hadError = true;
-        log.warn(`[cloud-relay] dispatch error: ${err?.message}`);
-        const errChunk = `data: ${JSON.stringify({
-          error: { message: err?.message || "Unknown error", type: "server_error" }
-        })}
+    setActiveRequest({ requestId: msg.requestId, ws: state.ws, log });
+    let hadError = false;
+    let deliverCount = 0;
+    let deliveredChars = 0;
+    await channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
+      ctx: ctxPayload,
+      cfg,
+      dispatcherOptions: {
+        deliver: async (block) => {
+          const blockText = block.text || "";
+          if (blockText) {
+            const prev = getLastSentText();
+            const delta = blockText.startsWith(prev) ? blockText.slice(prev.length) : blockText;
+            if (delta) {
+              deliverCount++;
+              deliveredChars += delta.length;
+              sendSseText(state.ws, msg.requestId, delta, log);
+              setLastSentText(blockText);
+            }
+          }
+          return { ok: true };
+        },
+        onError: (err) => {
+          hadError = true;
+          log.warn(`[cloud-relay] dispatch error: req=${shortId} ${err?.message}`);
+          const errChunk = `data: ${JSON.stringify({
+            error: { message: err?.message || "Unknown error", type: "server_error" }
+          })}
 
 `;
-        safeSend(state.ws, { type: "response-chunk", requestId: msg.requestId, data: Buffer.from(errChunk).toString("base64") }, log);
+          safeSend(state.ws, { type: "response-chunk", requestId: msg.requestId, data: Buffer.from(errChunk).toString("base64") }, log);
+        }
+      },
+      replyOptions: {
+        ...buildReplyOptions(state, msg.requestId, log),
+        sourceReplyDeliveryMode: "normal",
+        suppressDefaultToolProgressMessages: true
       }
-    },
-    replyOptions: {
-      ...buildReplyOptions(state, msg.requestId, log, streamState),
-      sourceReplyDeliveryMode: "normal",
-      suppressDefaultToolProgressMessages: true
-    }
-  });
-  if (!hadError) {
-    const doneChunk = `data: ${JSON.stringify({
-      id: `chatcmpl-${randomUUID3()}`,
-      object: "chat.completion.chunk",
-      choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
-    })}
+    });
+    if (!hadError) {
+      const doneChunk = `data: ${JSON.stringify({
+        id: `chatcmpl-${randomUUID3()}`,
+        object: "chat.completion.chunk",
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
+      })}
 
 data: [DONE]
 
 `;
-    safeSend(state.ws, { type: "response-chunk", requestId: msg.requestId, data: Buffer.from(doneChunk).toString("base64") }, log);
-  }
-  setActiveRequest(null);
-  safeSend(state.ws, { type: "response-end", requestId: msg.requestId }, log);
-  log.info(`[cloud-relay] ${msg.method} ${msg.path} 200 user=${userId}`);
+      safeSend(state.ws, { type: "response-chunk", requestId: msg.requestId, data: Buffer.from(doneChunk).toString("base64") }, log);
+    }
+    setActiveRequest(null);
+    log.info(
+      `[cloud-relay] request completed: req=${shortId} user=${userId} delivers=${deliverCount} chars=${deliveredChars} hadError=${hadError} durationMs=${Date.now() - startedAt}`
+    );
+    safeSend(state.ws, { type: "response-end", requestId: msg.requestId }, log);
+  });
 }
 
 // src/gateway.ts
 async function startGatewayAccount(ctx) {
   const log = ctx.log || { info: console.log, warn: console.warn, error: console.error };
   const account = ctx.account || resolveAccount(ctx.cfg, ctx.accountId);
-  log.info("[cloud-relay] channel startAccount");
   if (!account.token) {
     log.error("[cloud-relay] No token configured.");
     log.error("[cloud-relay] 1. Sign in at https://ocv.razer.ai and copy your token");
@@ -315,9 +352,7 @@ async function startGatewayAccount(ctx) {
     throw new Error("Cloud Relay token not configured");
   }
   setGatewayChannelRuntime(ctx.channelRuntime || null);
-  if (ctx.channelRuntime) {
-    log.info("[cloud-relay] ctx.channelRuntime available, using SDK dispatch for chat");
-  } else {
+  if (!ctx.channelRuntime) {
     log.warn("[cloud-relay] channelRuntime not available, SDK dispatch will not work");
   }
   const state = {
@@ -381,8 +416,10 @@ async function startGatewayAccount(ctx) {
         return;
       }
       if (parsedMsg.type === "request") {
+        const reqId = String(parsedMsg.requestId || "unknown").slice(0, 8);
         const channelRuntime = resolveChannelRuntime(ctx);
         if (!channelRuntime) {
+          log.warn(`[cloud-relay] tunnel request rejected, channelRuntime missing: req=${reqId}`);
           safeSend(state.ws, {
             type: "response",
             requestId: parsedMsg.requestId,
@@ -393,7 +430,7 @@ async function startGatewayAccount(ctx) {
           return;
         }
         dispatchChat(parsedMsg, state, ctx, log, channelRuntime).catch((err) => {
-          log.error(`[cloud-relay] dispatch error: ${err.message}`);
+          log.error(`[cloud-relay] dispatch error: req=${reqId} ${err.message}`);
           safeSend(state.ws, {
             type: "response",
             requestId: parsedMsg.requestId,
@@ -413,7 +450,7 @@ async function startGatewayAccount(ctx) {
         clearInterval(state.heartbeatTimer);
         state.heartbeatTimer = null;
       }
-      if (event.code === 4003 || event.code === 4001) {
+      if (event.code === 4e3 || event.code === 4001 || event.code === 4003) {
         state.stopped = true;
         return;
       }
@@ -537,28 +574,21 @@ var outboundAdapter = {
     const text = ctx.text || "";
     const req = getActiveRequest();
     if (req && req.ws && text) {
-      if (req.streamState?.hadPartial || req.streamState?.sentFinal) {
-        req.log.info(`[cloud-relay] outbound.sendText suppressed after prior text delivery: len=${text.length}`);
-      } else {
-        if (req.streamState) req.streamState.sentFinal = true;
-        req.log.info(`[cloud-relay] outbound.sendText fallback: len=${text.length} text="${text.slice(0, 80)}"`);
-        sendSseText(req.ws, req.requestId, text, req.log);
+      const prev = getLastSentText();
+      const delta = text.startsWith(prev) ? text.slice(prev.length) : text;
+      if (delta) {
+        sendSseText(req.ws, req.requestId, delta, req.log);
+        setLastSentText(text);
       }
-    } else {
-      console.log(`[cloud-relay] outbound.sendText MISSED: activeRequest=${!!req} text.len=${text.length}`);
     }
     return { ok: true, messageId: `relay-${Date.now()}` };
   },
   sendMedia: async (ctx) => {
     const req = getActiveRequest();
     if (!req?.ws) {
-      console.log("[cloud-relay] outbound.sendMedia MISSED: no active request");
       return { ok: false, messageId: `relay-${Date.now()}` };
     }
     const media = await loadOutboundMedia(ctx);
-    req.log.info(
-      `[cloud-relay] outbound.sendMedia: filename=${media.filename} mime=${media.mimeType} bytes=${media.buffer.byteLength}`
-    );
     safeSend(req.ws, {
       type: "gateway.event",
       event: "media",
