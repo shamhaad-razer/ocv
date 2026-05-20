@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { safeSend } from "./websocket.js";
+import { getLastSentText, setLastSentText } from "./state.js";
 import type { Log, RelayState } from "./types.js";
 
 export function buildReplyOptions(state: RelayState, requestId: unknown, log: Log) {
@@ -9,8 +10,12 @@ export function buildReplyOptions(state: RelayState, requestId: unknown, log: Lo
 
   return {
     onPartialReply: async (payload: { text?: string }) => {
-      const delta = payload.text || "";
+      const text = payload.text || "";
+      if (!text) return;
+      const prev = getLastSentText();
+      const delta = text.startsWith(prev) ? text.slice(prev.length) : text;
       if (!delta) return;
+      setLastSentText(text);
       const sseChunk = `data: ${JSON.stringify({
         id: `chatcmpl-${randomUUID()}`,
         object: "chat.completion.chunk",

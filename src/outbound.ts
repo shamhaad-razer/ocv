@@ -1,6 +1,5 @@
-import { randomUUID } from "node:crypto";
 import { loadOutboundMedia, mediaKindFromMime } from "./media.js";
-import { getActiveRequest } from "./state.js";
+import { getActiveRequest, getLastSentText, setLastSentText } from "./state.js";
 import { safeSend, sendSseText } from "./websocket.js";
 import type { OutboundMediaContext } from "./types.js";
 
@@ -12,10 +11,12 @@ export const outboundAdapter = {
     const text = ctx.text || "";
     const req = getActiveRequest();
     if (req && req.ws && text) {
-      req.log.info(`[cloud-relay] outbound.sendText: len=${text.length} text="${text.slice(0, 80)}"`);
-      sendSseText(req.ws, req.requestId, text, req.log);
-    } else {
-      console.log(`[cloud-relay] outbound.sendText MISSED: activeRequest=${!!req} text.len=${text.length}`);
+      const prev = getLastSentText();
+      const delta = text.startsWith(prev) ? text.slice(prev.length) : text;
+      if (delta) {
+        sendSseText(req.ws, req.requestId, delta, req.log);
+        setLastSentText(text);
+      }
     }
     return { ok: true, messageId: `relay-${Date.now()}` };
   },
@@ -23,14 +24,10 @@ export const outboundAdapter = {
   sendMedia: async (ctx: OutboundMediaContext) => {
     const req = getActiveRequest();
     if (!req?.ws) {
-      console.log("[cloud-relay] outbound.sendMedia MISSED: no active request");
       return { ok: false, messageId: `relay-${Date.now()}` };
     }
 
     const media = await loadOutboundMedia(ctx);
-    req.log.info(
-      `[cloud-relay] outbound.sendMedia: filename=${media.filename} mime=${media.mimeType} bytes=${media.buffer.byteLength}`,
-    );
 
     safeSend(req.ws, {
       type: "gateway.event",
