@@ -1,7 +1,8 @@
-import { loadOutboundMedia, mediaKindFromMime } from "./media.js";
-import { getActiveRequest, getLastSentText, setLastSentText } from "./state.js";
-import { safeSend, sendSseText } from "./websocket.js";
-import type { OutboundMediaContext } from "./types.js";
+import { postPush, postRespond } from "./http-client.js";
+import { getActiveRequest, getRelayState } from "./state.js";
+import type { Log } from "./types.js";
+
+const fallbackLog: Log = { info: console.log, warn: console.warn, error: console.error };
 
 export const outboundAdapter = {
   deliveryMode: "direct",
@@ -9,45 +10,44 @@ export const outboundAdapter = {
 
   sendText: async (ctx: { to: string; text: string; cfg?: unknown; accountId?: string | null }) => {
     const text = ctx.text || "";
+    if (!text) return { ok: true, messageId: `relay-${Date.now()}` };
+
     const req = getActiveRequest();
-    if (req && req.ws && text) {
-      const prev = getLastSentText();
-      const delta = text.startsWith(prev) ? text.slice(prev.length) : text;
-      if (delta) {
-        sendSseText(req.ws, req.requestId, delta, req.log);
-        setLastSentText(text);
+    if (req) {
+      if (req.streamState.sentFinal) {
+        req.log.info(`[cloud-relay] outbound.sendText suppressed after prior delivery: len=${text.length}`);
+      } else {
+        req.streamState.sentFinal = true;
+        await postRespond(req.relayState, { requestId: req.requestId, type: "end", text }, req.log);
       }
+      return { ok: true, messageId: `relay-${Date.now()}` };
     }
-    return { ok: true, messageId: `relay-${Date.now()}` };
+
+    // No active request — push async message (cron reminder)
+    const relay = getRelayState();
+    if (relay) {
+      const userId = ctx.to.replace("cloud-relay:", "");
+      const runId = `cron-${Date.now()}`;
+      const ok = await postPush(relay, {
+        userId,
+        event: "chat",
+        payload: {
+          state: "final",
+          runId,
+          sessionKey: `agent:main:cloud-relay:direct:${userId}`,
+          message: { role: "assistant", content: text },
+        },
+      }, fallbackLog);
+      return { ok, messageId: `relay-push-${Date.now()}` };
+    }
+
+    fallbackLog.warn(`[cloud-relay] outbound.sendText: no delivery path available`);
+    return { ok: false, messageId: `relay-${Date.now()}` };
   },
 
-  sendMedia: async (ctx: OutboundMediaContext) => {
-    const req = getActiveRequest();
-    if (!req?.ws) {
-      return { ok: false, messageId: `relay-${Date.now()}` };
-    }
-
-    const media = await loadOutboundMedia(ctx);
-
-    safeSend(req.ws, {
-      type: "gateway.event",
-      event: "media",
-      payload: {
-        type: "media",
-        kind: mediaKindFromMime(media.mimeType),
-        voice: Boolean(ctx.audioAsVoice),
-        filename: media.filename,
-        mimeType: media.mimeType,
-        caption: ctx.text || "",
-        data: media.buffer.toString("base64"),
-      },
-    }, req.log);
-
-    const fallback = mediaKindFromMime(media.mimeType) === "audio"
-      ? `\n[Voice note attached: ${media.filename}]\n`
-      : `\n[Media attached: ${media.filename}]\n`;
-    sendSseText(req.ws, req.requestId, `${ctx.text ? ctx.text + "\n" : ""}${fallback}`, req.log);
-
-    return { ok: true, messageId: `relay-media-${Date.now()}` };
+  sendMedia: async (ctx: { to: string; text?: string }) => {
+    // Media push not supported in long-poll mode (would need file upload endpoint)
+    fallbackLog.warn(`[cloud-relay] outbound.sendMedia not supported in HTTP mode`);
+    return { ok: false, messageId: `relay-media-${Date.now()}` };
   },
 };

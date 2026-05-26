@@ -1,6 +1,6 @@
-export const DEFAULT_RELAY_URL = "wss://ocv.razer.ai/_tunnel";
+export const DEFAULT_RELAY_URL = "ws://localhost:3000/_tunnel";
 export const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
-export const HEARTBEAT_INTERVAL_MS = 30000;
+export const POLL_TIMEOUT_MS = 35_000;
 export const CHANNEL_ID = "cloud-relay";
 export const DEFAULT_ACCOUNT_ID = "default";
 export const DEFAULT_AGENT_ID = "main";

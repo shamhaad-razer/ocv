@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/cloud-relay",
-  "version": "2026.5.20",
+  "version": "2026.5.26",
   "private": true,
   "description": "OpenClaw Cloud Relay tunnel channel plugin",
   "type": "module",

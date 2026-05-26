@@ -1,13 +1,24 @@
 export interface RelayState {
-  ws: WebSocket | null;
-  connecting: boolean;
   stopped: boolean;
   reconnectAttempt: number;
-  reconnectTimer: ReturnType<typeof setTimeout> | null;
-  heartbeatTimer: ReturnType<typeof setInterval> | null;
+  pollAbort: AbortController | null;
   tokenPollTimer: ReturnType<typeof setInterval> | null;
   lastKnownToken: string;
   username: string | null;
+  relayHttpUrl: string;
+  token: string;
+}
+
+export interface StreamDeliveryState {
+  hadPartial: boolean;
+  sentFinal: boolean;
+}
+
+export interface ActiveRequest {
+  requestId: string;
+  relayState: RelayState;
+  log: Log;
+  streamState: StreamDeliveryState;
 }
 
 export interface ResolvedAccount {

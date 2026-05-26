@@ -37,6 +37,15 @@ export const cloudRelayPlugin = {
     isConfigured: (account: ResolvedAccount) => Boolean(account?.configured),
   },
 
+  pairing: {
+    text: {
+      idLabel: "userId",
+      normalizeAllowEntry: (entry: string) =>
+        entry.replace(/^cloud-relay:/i, ""),
+      notify: async () => {},
+    },
+  },
+
   gateway: {
     startAccount: async (ctx: GatewayContext) => startGatewayAccount(ctx),
     stopAccount: async (ctx: GatewayContext) => {
