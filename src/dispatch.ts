@@ -144,7 +144,10 @@ export async function dispatchChat(
         onError: (err: Error | null) => {
           hadError = true;
           log.warn(`[cloud-relay] dispatch error: req=${shortId} ${err?.message}`);
-          postRespond(state, { requestId, type: "error", text: err?.message || "Unknown error" }, log);
+          if (!streamState.sentFinal) {
+            streamState.sentFinal = true;
+            postRespond(state, { requestId, type: "error", text: err?.message || "Unknown error" }, log);
+          }
         },
       },
       replyOptions: {

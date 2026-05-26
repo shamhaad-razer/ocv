@@ -88,6 +88,7 @@ function buildReplyOptions(state, requestId, log, streamState) {
   let lastPartialText = "";
   return {
     onPartialReply: async (payload) => {
+      if (streamState.sentFinal) return;
       const text = payload.text || "";
       let delta = text;
       if (text.startsWith(lastPartialText)) {
@@ -259,7 +260,10 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
         onError: (err) => {
           hadError = true;
           log.warn(`[cloud-relay] dispatch error: req=${shortId} ${err?.message}`);
-          postRespond(state, { requestId, type: "error", text: err?.message || "Unknown error" }, log);
+          if (!streamState.sentFinal) {
+            streamState.sentFinal = true;
+            postRespond(state, { requestId, type: "error", text: err?.message || "Unknown error" }, log);
+          }
         }
       },
       replyOptions: {

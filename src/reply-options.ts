@@ -6,6 +6,7 @@ export function buildReplyOptions(state: RelayState, requestId: string, log: Log
 
   return {
     onPartialReply: async (payload: { text?: string }) => {
+      if (streamState.sentFinal) return;
       const text = payload.text || "";
       let delta = text;
       if (text.startsWith(lastPartialText)) {
