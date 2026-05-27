@@ -18,7 +18,7 @@ export const outboundAdapter = {
         req.log.info(`[cloud-relay] outbound.sendText suppressed after prior delivery: len=${text.length}`);
       } else {
         req.streamState.sentFinal = true;
-        await postRespond(req.relayState, { requestId: req.requestId, type: "end", text }, req.log);
+        await postRespond(req.relayState, { type: "end", text, ...req.respondCtx }, req.log);
       }
       return { ok: true, messageId: `relay-${Date.now()}` };
     }

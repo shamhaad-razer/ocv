@@ -4,13 +4,6 @@ import { dispatchChat } from "./dispatch.js";
 import { resolveChannelRuntime, setGatewayChannelRuntime, setRelayState } from "./state.js";
 import type { GatewayContext, Log, RelayState } from "./types.js";
 
-function deriveHttpUrl(wsUrl: string): string {
-  return wsUrl
-    .replace(/\/_tunnel$/, "")
-    .replace(/^wss:/, "https:")
-    .replace(/^ws:/, "http:");
-}
-
 export async function startGatewayAccount(ctx: GatewayContext): Promise<void> {
   const log: Log = ctx.log || { info: console.log, warn: console.warn, error: console.error };
   const account = ctx.account || resolveAccount(ctx.cfg, ctx.accountId);
@@ -22,7 +15,7 @@ export async function startGatewayAccount(ctx: GatewayContext): Promise<void> {
 
   setGatewayChannelRuntime(ctx.channelRuntime || null);
 
-  const relayHttpUrl = deriveHttpUrl(resolveRelayUrl(ctx.cfg));
+  const relayHttpUrl = resolveRelayUrl(ctx.cfg);
   const state: RelayState = {
     stopped: false,
     reconnectAttempt: 0,

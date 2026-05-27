@@ -2,7 +2,7 @@ import type { Log, RelayState } from "./types.js";
 
 export async function postRespond(
   state: RelayState,
-  body: { requestId: string; type: "chunk" | "end" | "error"; text?: string },
+  body: { type: "chunk" | "end" | "error"; text?: string; runId: string; sessionKey: string; userId: string },
   log: Log,
 ): Promise<void> {
   try {

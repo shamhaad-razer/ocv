@@ -1,4 +1,4 @@
-export const DEFAULT_RELAY_URL = "ws://localhost:3000/_tunnel";
+export const DEFAULT_RELAY_URL = "https://ocv.razer.ai";
 export const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
 export const POLL_TIMEOUT_MS = 35_000;
 export const CHANNEL_ID = "cloud-relay";

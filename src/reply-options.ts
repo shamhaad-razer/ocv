@@ -1,7 +1,7 @@
 import { postRespond } from "./http-client.js";
 import type { Log, RelayState, StreamDeliveryState } from "./types.js";
 
-export function buildReplyOptions(state: RelayState, requestId: string, log: Log, streamState: StreamDeliveryState) {
+export function buildReplyOptions(state: RelayState, log: Log, streamState: StreamDeliveryState, respondCtx: { runId: string; sessionKey: string; userId: string }) {
   let lastPartialText = "";
 
   return {
@@ -17,7 +17,7 @@ export function buildReplyOptions(state: RelayState, requestId: string, log: Log
       if (!delta) return;
       lastPartialText = text;
       streamState.hadPartial = true;
-      await postRespond(state, { requestId, type: "chunk", text }, log);
+      await postRespond(state, { type: "chunk", text, ...respondCtx }, log);
     },
     onReplyStart: async () => {},
     onBlockReplyQueued: async () => {},
