@@ -1,5 +1,5 @@
 // src/constants.ts
-var DEFAULT_RELAY_URL = "ws://localhost:3000/_tunnel";
+var DEFAULT_RELAY_URL = "https://ocv.razer.ai";
 var RECONNECT_DELAYS = [1e3, 2e3, 4e3, 8e3, 16e3, 3e4];
 var CHANNEL_ID = "cloud-relay";
 var DEFAULT_ACCOUNT_ID = "default";
@@ -20,7 +20,8 @@ function resolveToken(cfg) {
   return resolveChannelConfig(cfg)?.token || process.env.CLOUD_RELAY_TOKEN || "";
 }
 function resolveRelayUrl(cfg) {
-  return resolveChannelConfig(cfg)?.relayUrl || DEFAULT_RELAY_URL;
+  const raw = resolveChannelConfig(cfg)?.relayUrl || DEFAULT_RELAY_URL;
+  return raw.replace(/\/_tunnel$/, "").replace(/^wss:/, "https:").replace(/^ws:/, "http:");
 }
 function normalizeAgentId(value) {
   const normalized = (value ?? "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+/g, "").replace(/-+$/g, "");
@@ -284,9 +285,6 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
 }
 
 // src/gateway.ts
-function deriveHttpUrl(wsUrl) {
-  return wsUrl.replace(/\/_tunnel$/, "").replace(/^wss:/, "https:").replace(/^ws:/, "http:");
-}
 async function startGatewayAccount(ctx) {
   const log = ctx.log || { info: console.log, warn: console.warn, error: console.error };
   const account = ctx.account || resolveAccount(ctx.cfg, ctx.accountId);
@@ -295,7 +293,7 @@ async function startGatewayAccount(ctx) {
     throw new Error("Cloud Relay token not configured");
   }
   setGatewayChannelRuntime(ctx.channelRuntime || null);
-  const relayHttpUrl = deriveHttpUrl(resolveRelayUrl(ctx.cfg));
+  const relayHttpUrl = resolveRelayUrl(ctx.cfg);
   const state = {
     stopped: false,
     reconnectAttempt: 0,
