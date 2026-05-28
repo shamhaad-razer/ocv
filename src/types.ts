@@ -10,7 +10,6 @@ export interface RelayState {
 }
 
 export interface StreamDeliveryState {
-  hadPartial: boolean;
   sentFinal: boolean;
 }
 

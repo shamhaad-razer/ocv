@@ -126,7 +126,7 @@ export async function dispatchChat(
       },
     });
 
-    const streamState = { hadPartial: false, sentFinal: false };
+    const streamState = { sentFinal: false };
     setActiveRequest({ relayState: state, log, streamState, respondCtx });
     let hadError = false;
     let deliveredChars = 0;
@@ -154,7 +154,7 @@ export async function dispatchChat(
         },
       },
       replyOptions: {
-        ...buildReplyOptions(state, log, streamState, respondCtx),
+        ...buildReplyOptions(),
         sourceReplyDeliveryMode: "normal",
         suppressDefaultToolProgressMessages: true,
       },

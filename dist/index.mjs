@@ -84,22 +84,9 @@ async function postPush(state, body, log) {
 }
 
 // src/reply-options.ts
-function buildReplyOptions(state, log, streamState, respondCtx) {
-  let lastPartialText = "";
+function buildReplyOptions() {
   return {
-    onPartialReply: async (payload) => {
-      if (streamState.sentFinal) return;
-      const text = payload.text || "";
-      let delta = text;
-      if (text.startsWith(lastPartialText)) {
-        delta = text.slice(lastPartialText.length);
-      } else if (text === lastPartialText) {
-        return;
-      }
-      if (!delta) return;
-      lastPartialText = text;
-      streamState.hadPartial = true;
-      await postRespond(state, { type: "chunk", text, ...respondCtx }, log);
+    onPartialReply: async () => {
     },
     onReplyStart: async () => {
     },
@@ -242,7 +229,7 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
         log.warn(`[cloud-relay] session record error: ${err.message}`);
       }
     });
-    const streamState = { hadPartial: false, sentFinal: false };
+    const streamState = { sentFinal: false };
     setActiveRequest({ relayState: state, log, streamState, respondCtx });
     let hadError = false;
     let deliveredChars = 0;
@@ -269,7 +256,7 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
         }
       },
       replyOptions: {
-        ...buildReplyOptions(state, log, streamState, respondCtx),
+        ...buildReplyOptions(),
         sourceReplyDeliveryMode: "normal",
         suppressDefaultToolProgressMessages: true
       }
