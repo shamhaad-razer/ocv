@@ -1,24 +1,6 @@
-import { postRespond } from "./http-client.js";
-import type { Log, RelayState, StreamDeliveryState } from "./types.js";
-
-export function buildReplyOptions(state: RelayState, requestId: string, log: Log, streamState: StreamDeliveryState) {
-  let lastPartialText = "";
-
+export function buildReplyOptions() {
   return {
-    onPartialReply: async (payload: { text?: string }) => {
-      if (streamState.sentFinal) return;
-      const text = payload.text || "";
-      let delta = text;
-      if (text.startsWith(lastPartialText)) {
-        delta = text.slice(lastPartialText.length);
-      } else if (text === lastPartialText) {
-        return;
-      }
-      if (!delta) return;
-      lastPartialText = text;
-      streamState.hadPartial = true;
-      await postRespond(state, { requestId, type: "chunk", text }, log);
-    },
+    onPartialReply: async () => {},
     onReplyStart: async () => {},
     onBlockReplyQueued: async () => {},
     onToolStart: async () => {},

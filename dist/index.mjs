@@ -1,5 +1,5 @@
 // src/constants.ts
-var DEFAULT_RELAY_URL = "wss://ocv.razer.ai/_tunnel";
+var DEFAULT_RELAY_URL = "https://ocv.razer.ai";
 var RECONNECT_DELAYS = [1e3, 2e3, 4e3, 8e3, 16e3, 3e4];
 var CHANNEL_ID = "cloud-relay";
 var DEFAULT_ACCOUNT_ID = "default";
@@ -20,7 +20,8 @@ function resolveToken(cfg) {
   return resolveChannelConfig(cfg)?.token || process.env.CLOUD_RELAY_TOKEN || "";
 }
 function resolveRelayUrl(cfg) {
-  return resolveChannelConfig(cfg)?.relayUrl || DEFAULT_RELAY_URL;
+  const raw = resolveChannelConfig(cfg)?.relayUrl || DEFAULT_RELAY_URL;
+  return raw.replace(/\/_tunnel$/, "").replace(/^wss:/, "https:").replace(/^ws:/, "http:");
 }
 function normalizeAgentId(value) {
   const normalized = (value ?? "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+/g, "").replace(/-+$/g, "");
@@ -45,7 +46,6 @@ function resolveAccount(cfg, accountId) {
 }
 
 // src/dispatch.ts
-import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
 // src/http-client.ts
@@ -67,8 +67,10 @@ async function postRespond(state, body, log) {
   }
 }
 async function postPush(state, body, log) {
+  const url = `${state.relayHttpUrl}/api/push`;
   try {
-    const resp = await fetch(`${state.relayHttpUrl}/api/push`, {
+    log.info(`[cloud-relay] postPush -> ${url} userId=${body.userId} event=${body.event}`);
+    const resp = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -76,6 +78,12 @@ async function postPush(state, body, log) {
       },
       body: JSON.stringify(body)
     });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      log.warn(`[cloud-relay] postPush failed: ${resp.status} ${resp.statusText} body=${text.slice(0, 200)}`);
+    } else {
+      log.info(`[cloud-relay] postPush ok: ${resp.status}`);
+    }
     return resp.ok;
   } catch (err) {
     log.warn(`[cloud-relay] postPush error: ${err.message}`);
@@ -84,22 +92,9 @@ async function postPush(state, body, log) {
 }
 
 // src/reply-options.ts
-function buildReplyOptions(state, requestId, log, streamState) {
-  let lastPartialText = "";
+function buildReplyOptions() {
   return {
-    onPartialReply: async (payload) => {
-      if (streamState.sentFinal) return;
-      const text = payload.text || "";
-      let delta = text;
-      if (text.startsWith(lastPartialText)) {
-        delta = text.slice(lastPartialText.length);
-      } else if (text === lastPartialText) {
-        return;
-      }
-      if (!delta) return;
-      lastPartialText = text;
-      streamState.hadPartial = true;
-      await postRespond(state, { requestId, type: "chunk", text }, log);
+    onPartialReply: async () => {
     },
     onReplyStart: async () => {
     },
@@ -125,6 +120,7 @@ var pluginRuntime = null;
 var gatewayChannelRuntime = null;
 var activeRequest = null;
 var relayState = null;
+var lastSessionKeyByUser = /* @__PURE__ */ new Map();
 function setPluginRuntime(rt) {
   pluginRuntime = rt;
 }
@@ -142,6 +138,12 @@ function getRelayState() {
 }
 function setRelayState(state) {
   relayState = state;
+}
+function rememberSessionKey(userId, sessionKey) {
+  if (userId && sessionKey) lastSessionKeyByUser.set(userId, sessionKey);
+}
+function getLastSessionKey(userId) {
+  return lastSessionKeyByUser.get(userId);
 }
 function resolveChannelRuntime(ctx) {
   return gatewayChannelRuntime || pluginRuntime?.channel || ctx?.channelRuntime || null;
@@ -189,16 +191,19 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
     log.warn("[cloud-relay] channelRuntime not ready, rejecting request");
     return;
   }
+  const relayRunId = msg.runId;
+  const relaySessionKey = msg.sessionKey;
+  const relayUserId = msg.userId;
   const incoming = JSON.parse(Buffer.from(msg.body, "base64").toString());
-  const requestId = String(msg.requestId || randomUUID());
-  const shortId = requestId.slice(0, 8);
   const messages = incoming.messages || [];
   const lastMessage = messages[messages.length - 1];
   const text = lastMessage?.content || "";
-  const userId = incoming.user || state.username || "browser-user";
+  const userId = relayUserId || incoming.user || state.username || "browser-user";
+  const respondCtx = { runId: relayRunId, sessionKey: relaySessionKey, userId };
+  if (relaySessionKey) rememberSessionKey(userId, relaySessionKey);
   bootstrapOwnerIfNeeded(ctx.cfg, log);
   if (!text.trim()) {
-    log.warn(`[cloud-relay] dispatchChat empty message: req=${shortId} user=${userId}`);
+    log.warn(`[cloud-relay] dispatchChat empty message: user=${userId}`);
     return;
   }
   const systemMsg = messages.find((m) => m.role === "system");
@@ -240,8 +245,8 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
         log.warn(`[cloud-relay] session record error: ${err.message}`);
       }
     });
-    const streamState = { hadPartial: false, sentFinal: false };
-    setActiveRequest({ requestId, relayState: state, log, streamState });
+    const streamState = { sentFinal: false };
+    setActiveRequest({ relayState: state, log, streamState, respondCtx });
     let hadError = false;
     let deliveredChars = 0;
     await channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
@@ -253,39 +258,36 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
           if (blockText && !streamState.sentFinal) {
             streamState.sentFinal = true;
             deliveredChars += blockText.length;
-            await postRespond(state, { requestId, type: "end", text: blockText }, log);
+            await postRespond(state, { type: "end", text: blockText, ...respondCtx }, log);
           }
           return { ok: true };
         },
         onError: (err) => {
           hadError = true;
-          log.warn(`[cloud-relay] dispatch error: req=${shortId} ${err?.message}`);
+          log.warn(`[cloud-relay] dispatch error: user=${userId} ${err?.message}`);
           if (!streamState.sentFinal) {
             streamState.sentFinal = true;
-            postRespond(state, { requestId, type: "error", text: err?.message || "Unknown error" }, log);
+            postRespond(state, { type: "error", text: err?.message || "Unknown error", ...respondCtx }, log);
           }
         }
       },
       replyOptions: {
-        ...buildReplyOptions(state, requestId, log, streamState),
+        ...buildReplyOptions(),
         sourceReplyDeliveryMode: "normal",
         suppressDefaultToolProgressMessages: true
       }
     });
     if (!hadError && !streamState.sentFinal) {
-      await postRespond(state, { requestId, type: "end" }, log);
+      await postRespond(state, { type: "end", ...respondCtx }, log);
     }
     setActiveRequest(null);
     log.info(
-      `[cloud-relay] request completed: req=${shortId} user=${userId} chars=${deliveredChars} hadError=${hadError} durationMs=${Date.now() - startedAt}`
+      `[cloud-relay] request completed: user=${userId} chars=${deliveredChars} hadError=${hadError} durationMs=${Date.now() - startedAt}`
     );
   });
 }
 
 // src/gateway.ts
-function deriveHttpUrl(wsUrl) {
-  return wsUrl.replace(/\/_tunnel$/, "").replace(/^wss:/, "https:").replace(/^ws:/, "http:");
-}
 async function startGatewayAccount(ctx) {
   const log = ctx.log || { info: console.log, warn: console.warn, error: console.error };
   const account = ctx.account || resolveAccount(ctx.cfg, ctx.accountId);
@@ -294,7 +296,7 @@ async function startGatewayAccount(ctx) {
     throw new Error("Cloud Relay token not configured");
   }
   setGatewayChannelRuntime(ctx.channelRuntime || null);
-  const relayHttpUrl = deriveHttpUrl(resolveRelayUrl(ctx.cfg));
+  const relayHttpUrl = resolveRelayUrl(ctx.cfg);
   const state = {
     stopped: false,
     reconnectAttempt: 0,
@@ -402,6 +404,7 @@ var outboundAdapter = {
   textChunkLimit: 4e3,
   sendText: async (ctx) => {
     const text = ctx.text || "";
+    fallbackLog.info(`[cloud-relay] outbound.sendText called: to=${ctx.to} len=${text.length}`);
     if (!text) return { ok: true, messageId: `relay-${Date.now()}` };
     const req = getActiveRequest();
     if (req) {
@@ -409,7 +412,8 @@ var outboundAdapter = {
         req.log.info(`[cloud-relay] outbound.sendText suppressed after prior delivery: len=${text.length}`);
       } else {
         req.streamState.sentFinal = true;
-        await postRespond(req.relayState, { requestId: req.requestId, type: "end", text }, req.log);
+        req.log.info(`[cloud-relay] outbound.sendText via postRespond: len=${text.length}`);
+        await postRespond(req.relayState, { type: "end", text, ...req.respondCtx }, req.log);
       }
       return { ok: true, messageId: `relay-${Date.now()}` };
     }
@@ -417,19 +421,22 @@ var outboundAdapter = {
     if (relay) {
       const userId = ctx.to.replace("cloud-relay:", "");
       const runId = `cron-${Date.now()}`;
+      const sessionKey = getLastSessionKey(userId) ?? `tunnel:${userId}:default`;
+      fallbackLog.info(`[cloud-relay] outbound.sendText via postPush: userId=${userId} runId=${runId} sessionKey=${sessionKey} len=${text.length}`);
       const ok = await postPush(relay, {
         userId,
         event: "chat",
         payload: {
           state: "final",
           runId,
-          sessionKey: `agent:main:cloud-relay:direct:${userId}`,
+          sessionKey,
           message: { role: "assistant", content: text }
         }
       }, fallbackLog);
+      fallbackLog.info(`[cloud-relay] postPush result: ok=${ok} userId=${userId}`);
       return { ok, messageId: `relay-push-${Date.now()}` };
     }
-    fallbackLog.warn(`[cloud-relay] outbound.sendText: no delivery path available`);
+    fallbackLog.warn(`[cloud-relay] outbound.sendText: no delivery path available (no active request and no relay state) to=${ctx.to}`);
     return { ok: false, messageId: `relay-${Date.now()}` };
   },
   sendMedia: async (ctx) => {

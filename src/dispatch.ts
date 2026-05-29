@@ -1,10 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { CHANNEL_ID } from "./constants.js";
 import { resolveDefaultAgentId } from "./config.js";
 import { postRespond } from "./http-client.js";
 import { buildReplyOptions } from "./reply-options.js";
-import { getActiveRequest, setActiveRequest } from "./state.js";
+import { getActiveRequest, rememberSessionKey, setActiveRequest } from "./state.js";
 import type { ChannelRuntime, GatewayContext, Log, RelayState } from "./types.js";
 
 let dispatchQueueTail: Promise<void> = Promise.resolve();
@@ -62,21 +61,27 @@ export async function dispatchChat(
     return;
   }
 
+  const relayRunId = msg.runId as string;
+  const relaySessionKey = msg.sessionKey as string;
+  const relayUserId = msg.userId as string;
+
   const incoming = JSON.parse(Buffer.from(msg.body as string, "base64").toString()) as {
     messages?: Array<{ role?: string; content?: string }>;
     user?: string;
   };
-  const requestId = String(msg.requestId || randomUUID());
-  const shortId = requestId.slice(0, 8);
   const messages = incoming.messages || [];
   const lastMessage = messages[messages.length - 1];
   const text = lastMessage?.content || "";
-  const userId = incoming.user || state.username || "browser-user";
+  const userId = relayUserId || incoming.user || state.username || "browser-user";
+
+  const respondCtx = { runId: relayRunId, sessionKey: relaySessionKey, userId };
+
+  if (relaySessionKey) rememberSessionKey(userId, relaySessionKey);
 
   bootstrapOwnerIfNeeded(ctx.cfg, log);
 
   if (!text.trim()) {
-    log.warn(`[cloud-relay] dispatchChat empty message: req=${shortId} user=${userId}`);
+    log.warn(`[cloud-relay] dispatchChat empty message: user=${userId}`);
     return;
   }
 
@@ -123,8 +128,8 @@ export async function dispatchChat(
       },
     });
 
-    const streamState = { hadPartial: false, sentFinal: false };
-    setActiveRequest({ requestId, relayState: state, log, streamState });
+    const streamState = { sentFinal: false };
+    setActiveRequest({ relayState: state, log, streamState, respondCtx });
     let hadError = false;
     let deliveredChars = 0;
 
@@ -137,34 +142,33 @@ export async function dispatchChat(
           if (blockText && !streamState.sentFinal) {
             streamState.sentFinal = true;
             deliveredChars += blockText.length;
-            await postRespond(state, { requestId, type: "end", text: blockText }, log);
+            await postRespond(state, { type: "end", text: blockText, ...respondCtx }, log);
           }
           return { ok: true };
         },
         onError: (err: Error | null) => {
           hadError = true;
-          log.warn(`[cloud-relay] dispatch error: req=${shortId} ${err?.message}`);
+          log.warn(`[cloud-relay] dispatch error: user=${userId} ${err?.message}`);
           if (!streamState.sentFinal) {
             streamState.sentFinal = true;
-            postRespond(state, { requestId, type: "error", text: err?.message || "Unknown error" }, log);
+            postRespond(state, { type: "error", text: err?.message || "Unknown error", ...respondCtx }, log);
           }
         },
       },
       replyOptions: {
-        ...buildReplyOptions(state, requestId, log, streamState),
+        ...buildReplyOptions(),
         sourceReplyDeliveryMode: "normal",
         suppressDefaultToolProgressMessages: true,
       },
     });
 
     if (!hadError && !streamState.sentFinal) {
-      // No content was delivered (empty response)
-      await postRespond(state, { requestId, type: "end" }, log);
+      await postRespond(state, { type: "end", ...respondCtx }, log);
     }
 
     setActiveRequest(null);
     log.info(
-      `[cloud-relay] request completed: req=${shortId} user=${userId} ` +
+      `[cloud-relay] request completed: user=${userId} ` +
       `chars=${deliveredChars} hadError=${hadError} durationMs=${Date.now() - startedAt}`,
     );
   });

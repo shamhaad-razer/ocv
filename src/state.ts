@@ -4,6 +4,7 @@ let pluginRuntime: { channel?: ChannelRuntime } | null = null;
 let gatewayChannelRuntime: ChannelRuntime | null = null;
 let activeRequest: ActiveRequest | null = null;
 let relayState: RelayState | null = null;
+const lastSessionKeyByUser = new Map<string, string>();
 
 export function getPluginRuntime() { return pluginRuntime; }
 export function setPluginRuntime(rt: { channel?: ChannelRuntime } | null) { pluginRuntime = rt; }
@@ -16,6 +17,13 @@ export function setActiveRequest(req: ActiveRequest | null) { activeRequest = re
 
 export function getRelayState() { return relayState; }
 export function setRelayState(state: RelayState | null) { relayState = state; }
+
+export function rememberSessionKey(userId: string, sessionKey: string) {
+  if (userId && sessionKey) lastSessionKeyByUser.set(userId, sessionKey);
+}
+export function getLastSessionKey(userId: string): string | undefined {
+  return lastSessionKeyByUser.get(userId);
+}
 
 export function resolveChannelRuntime(ctx?: { channelRuntime?: ChannelRuntime }): ChannelRuntime | null {
   return gatewayChannelRuntime || pluginRuntime?.channel || ctx?.channelRuntime || null;

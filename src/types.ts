@@ -10,15 +10,20 @@ export interface RelayState {
 }
 
 export interface StreamDeliveryState {
-  hadPartial: boolean;
   sentFinal: boolean;
 }
 
+export interface RespondContext {
+  runId: string;
+  sessionKey: string;
+  userId: string;
+}
+
 export interface ActiveRequest {
-  requestId: string;
   relayState: RelayState;
   log: Log;
   streamState: StreamDeliveryState;
+  respondCtx: RespondContext;
 }
 
 export interface ResolvedAccount {

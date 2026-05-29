@@ -15,7 +15,11 @@ export function resolveToken(cfg: Record<string, unknown>): string {
 }
 
 export function resolveRelayUrl(cfg: Record<string, unknown>): string {
-  return (resolveChannelConfig(cfg)?.relayUrl as string) || DEFAULT_RELAY_URL;
+  const raw = (resolveChannelConfig(cfg)?.relayUrl as string) || DEFAULT_RELAY_URL;
+  return raw
+    .replace(/\/_tunnel$/, "")
+    .replace(/^wss:/, "https:")
+    .replace(/^ws:/, "http:");
 }
 
 export function normalizeAgentId(value: string | undefined | null): string {
