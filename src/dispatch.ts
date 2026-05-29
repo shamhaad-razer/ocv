@@ -3,7 +3,7 @@ import { CHANNEL_ID } from "./constants.js";
 import { resolveDefaultAgentId } from "./config.js";
 import { postRespond } from "./http-client.js";
 import { buildReplyOptions } from "./reply-options.js";
-import { getActiveRequest, setActiveRequest } from "./state.js";
+import { getActiveRequest, rememberSessionKey, setActiveRequest } from "./state.js";
 import type { ChannelRuntime, GatewayContext, Log, RelayState } from "./types.js";
 
 let dispatchQueueTail: Promise<void> = Promise.resolve();
@@ -75,6 +75,8 @@ export async function dispatchChat(
   const userId = relayUserId || incoming.user || state.username || "browser-user";
 
   const respondCtx = { runId: relayRunId, sessionKey: relaySessionKey, userId };
+
+  if (relaySessionKey) rememberSessionKey(userId, relaySessionKey);
 
   bootstrapOwnerIfNeeded(ctx.cfg, log);
 

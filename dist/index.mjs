@@ -67,8 +67,10 @@ async function postRespond(state, body, log) {
   }
 }
 async function postPush(state, body, log) {
+  const url = `${state.relayHttpUrl}/api/push`;
   try {
-    const resp = await fetch(`${state.relayHttpUrl}/api/push`, {
+    log.info(`[cloud-relay] postPush -> ${url} userId=${body.userId} event=${body.event}`);
+    const resp = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -76,6 +78,12 @@ async function postPush(state, body, log) {
       },
       body: JSON.stringify(body)
     });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      log.warn(`[cloud-relay] postPush failed: ${resp.status} ${resp.statusText} body=${text.slice(0, 200)}`);
+    } else {
+      log.info(`[cloud-relay] postPush ok: ${resp.status}`);
+    }
     return resp.ok;
   } catch (err) {
     log.warn(`[cloud-relay] postPush error: ${err.message}`);
@@ -112,6 +120,7 @@ var pluginRuntime = null;
 var gatewayChannelRuntime = null;
 var activeRequest = null;
 var relayState = null;
+var lastSessionKeyByUser = /* @__PURE__ */ new Map();
 function setPluginRuntime(rt) {
   pluginRuntime = rt;
 }
@@ -129,6 +138,12 @@ function getRelayState() {
 }
 function setRelayState(state) {
   relayState = state;
+}
+function rememberSessionKey(userId, sessionKey) {
+  if (userId && sessionKey) lastSessionKeyByUser.set(userId, sessionKey);
+}
+function getLastSessionKey(userId) {
+  return lastSessionKeyByUser.get(userId);
 }
 function resolveChannelRuntime(ctx) {
   return gatewayChannelRuntime || pluginRuntime?.channel || ctx?.channelRuntime || null;
@@ -185,6 +200,7 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
   const text = lastMessage?.content || "";
   const userId = relayUserId || incoming.user || state.username || "browser-user";
   const respondCtx = { runId: relayRunId, sessionKey: relaySessionKey, userId };
+  if (relaySessionKey) rememberSessionKey(userId, relaySessionKey);
   bootstrapOwnerIfNeeded(ctx.cfg, log);
   if (!text.trim()) {
     log.warn(`[cloud-relay] dispatchChat empty message: user=${userId}`);
@@ -388,6 +404,7 @@ var outboundAdapter = {
   textChunkLimit: 4e3,
   sendText: async (ctx) => {
     const text = ctx.text || "";
+    fallbackLog.info(`[cloud-relay] outbound.sendText called: to=${ctx.to} len=${text.length}`);
     if (!text) return { ok: true, messageId: `relay-${Date.now()}` };
     const req = getActiveRequest();
     if (req) {
@@ -395,6 +412,7 @@ var outboundAdapter = {
         req.log.info(`[cloud-relay] outbound.sendText suppressed after prior delivery: len=${text.length}`);
       } else {
         req.streamState.sentFinal = true;
+        req.log.info(`[cloud-relay] outbound.sendText via postRespond: len=${text.length}`);
         await postRespond(req.relayState, { type: "end", text, ...req.respondCtx }, req.log);
       }
       return { ok: true, messageId: `relay-${Date.now()}` };
@@ -403,19 +421,22 @@ var outboundAdapter = {
     if (relay) {
       const userId = ctx.to.replace("cloud-relay:", "");
       const runId = `cron-${Date.now()}`;
+      const sessionKey = getLastSessionKey(userId) ?? `tunnel:${userId}:default`;
+      fallbackLog.info(`[cloud-relay] outbound.sendText via postPush: userId=${userId} runId=${runId} sessionKey=${sessionKey} len=${text.length}`);
       const ok = await postPush(relay, {
         userId,
         event: "chat",
         payload: {
           state: "final",
           runId,
-          sessionKey: `agent:main:cloud-relay:direct:${userId}`,
+          sessionKey,
           message: { role: "assistant", content: text }
         }
       }, fallbackLog);
+      fallbackLog.info(`[cloud-relay] postPush result: ok=${ok} userId=${userId}`);
       return { ok, messageId: `relay-push-${Date.now()}` };
     }
-    fallbackLog.warn(`[cloud-relay] outbound.sendText: no delivery path available`);
+    fallbackLog.warn(`[cloud-relay] outbound.sendText: no delivery path available (no active request and no relay state) to=${ctx.to}`);
     return { ok: false, messageId: `relay-${Date.now()}` };
   },
   sendMedia: async (ctx) => {

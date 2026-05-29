@@ -27,8 +27,10 @@ export async function postPush(
   body: { userId: string; event: string; payload: Record<string, unknown> },
   log: Log,
 ): Promise<boolean> {
+  const url = `${state.relayHttpUrl}/api/push`;
   try {
-    const resp = await fetch(`${state.relayHttpUrl}/api/push`, {
+    log.info(`[cloud-relay] postPush -> ${url} userId=${body.userId} event=${body.event}`);
+    const resp = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -36,6 +38,12 @@ export async function postPush(
       },
       body: JSON.stringify(body),
     });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      log.warn(`[cloud-relay] postPush failed: ${resp.status} ${resp.statusText} body=${text.slice(0, 200)}`);
+    } else {
+      log.info(`[cloud-relay] postPush ok: ${resp.status}`);
+    }
     return resp.ok;
   } catch (err) {
     log.warn(`[cloud-relay] postPush error: ${(err as Error).message}`);
