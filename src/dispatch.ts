@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { CHANNEL_ID } from "./constants.js";
 import { resolveDefaultAgentId } from "./config.js";
+import { readHistory } from "./history.js";
 import { postRespond } from "./http-client.js";
 import { buildReplyOptions } from "./reply-options.js";
 import { getActiveRequest, rememberSessionKey, setActiveRequest } from "./state.js";
@@ -46,6 +47,58 @@ async function runInDispatchQueue<T>(task: () => Promise<T>): Promise<T> {
     return await task();
   } finally {
     release();
+  }
+}
+
+export async function dispatchRequest(
+  msg: Record<string, unknown>,
+  state: RelayState,
+  ctx: GatewayContext,
+  log: Log,
+  channelRuntime: ChannelRuntime,
+): Promise<void> {
+  const path = typeof msg.path === "string" ? msg.path : "";
+  if (path === "/v1/chat/history") {
+    return dispatchHistory(msg, state, ctx, log, channelRuntime);
+  }
+  return dispatchChat(msg, state, ctx, log, channelRuntime);
+}
+
+async function dispatchHistory(
+  msg: Record<string, unknown>,
+  state: RelayState,
+  ctx: GatewayContext,
+  log: Log,
+  channelRuntime: ChannelRuntime,
+): Promise<void> {
+  const runId = msg.runId as string;
+  const sessionKey = msg.sessionKey as string;
+  const userId = (msg.userId as string) || state.username || "browser-user";
+
+  let limit: number | undefined;
+  if (typeof msg.body === "string") {
+    try {
+      const parsed = JSON.parse(Buffer.from(msg.body, "base64").toString());
+      if (parsed && typeof parsed.limit === "number") limit = parsed.limit;
+    } catch {
+      // ignore — limit stays default
+    }
+  }
+
+  try {
+    const messages = await readHistory({
+      cfg: ctx.cfg,
+      channelRuntime,
+      userId,
+      limit,
+      log,
+    });
+    log.info(`[cloud-relay] history responded: user=${userId} messages=${messages.length}`);
+    await postRespond(state, { type: "history", messages, runId, sessionKey, userId }, log);
+  } catch (err) {
+    const errMsg = (err as Error).message || "history read failed";
+    log.warn(`[cloud-relay] history error: user=${userId} ${errMsg}`);
+    await postRespond(state, { type: "error", text: errMsg, runId, sessionKey, userId }, log);
   }
 }
 

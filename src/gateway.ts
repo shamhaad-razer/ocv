@@ -1,6 +1,6 @@
 import { POLL_TIMEOUT_MS, RECONNECT_DELAYS, TOKEN_POLL_INTERVAL_MS } from "./constants.js";
 import { resolveAccount, resolveRelayUrl, resolveToken } from "./config.js";
-import { dispatchChat } from "./dispatch.js";
+import { dispatchRequest } from "./dispatch.js";
 import { resolveChannelRuntime, setGatewayChannelRuntime, setRelayState } from "./state.js";
 import type { GatewayContext, Log, RelayState } from "./types.js";
 
@@ -93,7 +93,7 @@ export async function startGatewayAccount(ctx: GatewayContext): Promise<void> {
           // Dispatch the request
           const channelRuntime = resolveChannelRuntime(ctx);
           if (channelRuntime) {
-            dispatchChat(msg, state, ctx, log, channelRuntime).catch((err) => {
+            dispatchRequest(msg, state, ctx, log, channelRuntime).catch((err) => {
               log.error(`[cloud-relay] dispatch error: ${(err as Error).message}`);
             });
           } else {

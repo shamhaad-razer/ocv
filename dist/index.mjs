@@ -48,6 +48,86 @@ function resolveAccount(cfg, accountId) {
 // src/dispatch.ts
 import { readFileSync, writeFileSync } from "node:fs";
 
+// src/history.ts
+import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import {
+  getSessionEntry,
+  resolveSessionTranscriptPathInDir,
+  resolveStorePath
+} from "openclaw/plugin-sdk/session-store-runtime";
+async function readHistory(params) {
+  const { cfg, channelRuntime, userId, log } = params;
+  const limit = params.limit && params.limit > 0 ? params.limit : 500;
+  const agentId = resolveDefaultAgentId(cfg);
+  const sessionKey = channelRuntime.routing.buildAgentSessionKey({
+    agentId,
+    channel: CHANNEL_ID,
+    peer: { id: userId, type: "direct" },
+    dmScope: cfg?.session?.dmScope || "per-channel-peer"
+  });
+  const storePath = resolveStorePath(
+    cfg?.session?.store,
+    { agentId }
+  );
+  const entry = getSessionEntry({ storePath, sessionKey });
+  const sessionId = entry?.sessionId;
+  if (!sessionId) {
+    log.info(`[cloud-relay] readHistory: no sessionId for sessionKey=${sessionKey}`);
+    return [];
+  }
+  const transcriptPath = resolveSessionTranscriptPathInDir(sessionId, dirname(storePath));
+  let raw;
+  try {
+    raw = await readFile(transcriptPath, "utf-8");
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      log.info(`[cloud-relay] readHistory: transcript missing at ${transcriptPath}`);
+      return [];
+    }
+    throw err;
+  }
+  const messages = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let entry2;
+    try {
+      entry2 = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (entry2.type && entry2.type !== "message") continue;
+    const message = entry2.message;
+    if (!message) continue;
+    const role = typeof message.role === "string" ? message.role : "";
+    if (role !== "user" && role !== "assistant") continue;
+    const content = flattenContent(message.content);
+    if (!content) continue;
+    messages.push({
+      id: typeof entry2.id === "string" ? entry2.id : `${messages.length}`,
+      role,
+      content,
+      timestamp: typeof entry2.timestamp === "number" ? entry2.timestamp : void 0
+    });
+  }
+  return messages.slice(-limit);
+}
+function flattenContent(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts = [];
+  for (const block of content) {
+    if (typeof block === "string") {
+      parts.push(block);
+    } else if (block && typeof block === "object") {
+      const b = block;
+      if (b.type === "text" && typeof b.text === "string") parts.push(b.text);
+    }
+  }
+  return parts.join("");
+}
+
 // src/http-client.ts
 async function postRespond(state, body, log) {
   try {
@@ -184,6 +264,41 @@ async function runInDispatchQueue(task) {
     return await task();
   } finally {
     release();
+  }
+}
+async function dispatchRequest(msg, state, ctx, log, channelRuntime) {
+  const path = typeof msg.path === "string" ? msg.path : "";
+  if (path === "/v1/chat/history") {
+    return dispatchHistory(msg, state, ctx, log, channelRuntime);
+  }
+  return dispatchChat(msg, state, ctx, log, channelRuntime);
+}
+async function dispatchHistory(msg, state, ctx, log, channelRuntime) {
+  const runId = msg.runId;
+  const sessionKey = msg.sessionKey;
+  const userId = msg.userId || state.username || "browser-user";
+  let limit;
+  if (typeof msg.body === "string") {
+    try {
+      const parsed = JSON.parse(Buffer.from(msg.body, "base64").toString());
+      if (parsed && typeof parsed.limit === "number") limit = parsed.limit;
+    } catch {
+    }
+  }
+  try {
+    const messages = await readHistory({
+      cfg: ctx.cfg,
+      channelRuntime,
+      userId,
+      limit,
+      log
+    });
+    log.info(`[cloud-relay] history responded: user=${userId} messages=${messages.length}`);
+    await postRespond(state, { type: "history", messages, runId, sessionKey, userId }, log);
+  } catch (err) {
+    const errMsg = err.message || "history read failed";
+    log.warn(`[cloud-relay] history error: user=${userId} ${errMsg}`);
+    await postRespond(state, { type: "error", text: errMsg, runId, sessionKey, userId }, log);
   }
 }
 async function dispatchChat(msg, state, ctx, log, channelRuntime) {
@@ -358,7 +473,7 @@ async function startGatewayAccount(ctx) {
           }
           const channelRuntime = resolveChannelRuntime(ctx);
           if (channelRuntime) {
-            dispatchChat(msg, state, ctx, log, channelRuntime).catch((err) => {
+            dispatchRequest(msg, state, ctx, log, channelRuntime).catch((err) => {
               log.error(`[cloud-relay] dispatch error: ${err.message}`);
             });
           } else {
