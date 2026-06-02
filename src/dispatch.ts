@@ -209,7 +209,7 @@ export async function dispatchChat(
         },
       },
       replyOptions: {
-        ...buildReplyOptions(),
+        ...buildReplyOptions(log, { state, respondCtx, streamState }),
         sourceReplyDeliveryMode: "normal",
         suppressDefaultToolProgressMessages: true,
       },

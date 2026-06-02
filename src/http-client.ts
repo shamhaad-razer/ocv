@@ -1,7 +1,7 @@
 import type { Log, RelayState } from "./types.js";
 
 export interface RespondBody {
-  type: "end" | "error" | "history";
+  type: "chunk" | "end" | "error" | "history";
   text?: string;
   messages?: unknown[];
   runId: string;

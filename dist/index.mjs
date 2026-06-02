@@ -172,9 +172,20 @@ async function postPush(state, body, log) {
 }
 
 // src/reply-options.ts
-function buildReplyOptions() {
+function buildReplyOptions(log, partialCtx) {
   return {
-    onPartialReply: async () => {
+    onPartialReply: async (payload) => {
+      const delta = payload?.delta ?? "";
+      const text = payload?.text ?? "";
+      log?.info(
+        `[cloud-relay] partial reply: deltaChars=${delta.length} textChars=${text.length}` + (payload?.replace ? " replace=true" : "")
+      );
+      if (!partialCtx || !text || partialCtx.streamState.sentFinal || !log) return;
+      await postRespond(
+        partialCtx.state,
+        { type: "chunk", text, ...partialCtx.respondCtx },
+        log
+      );
     },
     onReplyStart: async () => {
     },
@@ -387,7 +398,7 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
         }
       },
       replyOptions: {
-        ...buildReplyOptions(),
+        ...buildReplyOptions(log, { state, respondCtx, streamState }),
         sourceReplyDeliveryMode: "normal",
         suppressDefaultToolProgressMessages: true
       }
