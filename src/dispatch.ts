@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import { dispatchCancel } from "./cancel.js";
 import { CHANNEL_ID } from "./constants.js";
 import { resolveDefaultAgentId } from "./config.js";
 import { readHistory } from "./history.js";
@@ -57,6 +58,9 @@ export async function dispatchRequest(
   log: Log,
   channelRuntime: ChannelRuntime,
 ): Promise<void> {
+  if (msg.type === "cancel") {
+    return dispatchCancel(msg, state, ctx, log);
+  }
   const path = typeof msg.path === "string" ? msg.path : "";
   if (path === "/v1/chat/history") {
     return dispatchHistory(msg, state, ctx, log, channelRuntime);

@@ -47,6 +47,37 @@ export interface ChannelRuntime {
   };
 }
 
+export interface TaskRunView {
+  id: string;
+  status: string;
+  sessionKey: string;
+  runId?: string;
+  createdAt: number;
+  startedAt?: number;
+  endedAt?: number;
+}
+
+export interface TaskRunCancelResult {
+  found: boolean;
+  cancelled: boolean;
+  reason?: string;
+  task?: TaskRunView;
+}
+
+export interface BoundTaskRunsRuntime {
+  list: () => TaskRunView[];
+  cancel: (params: { taskId: string; cfg: Record<string, unknown> }) => Promise<TaskRunCancelResult>;
+}
+
+export interface PluginRuntime {
+  channel?: ChannelRuntime;
+  tasks?: {
+    runs: {
+      bindSession: (params: { sessionKey: string }) => BoundTaskRunsRuntime;
+    };
+  };
+}
+
 export interface GatewayContext {
   cfg: Record<string, unknown>;
   accountId?: string;
@@ -63,7 +94,7 @@ export interface Log {
 }
 
 export interface PluginApi {
-  runtime?: { channel?: ChannelRuntime };
+  runtime?: PluginRuntime;
   registerChannel: (opts: { plugin: unknown }) => void;
 }
 

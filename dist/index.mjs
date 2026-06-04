@@ -48,6 +48,132 @@ function resolveAccount(cfg, accountId) {
 // src/dispatch.ts
 import { readFileSync, writeFileSync } from "node:fs";
 
+// src/http-client.ts
+async function postRespond(state, body, log) {
+  try {
+    const resp = await fetch(`${state.relayHttpUrl}/api/respond`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      log.warn(`[cloud-relay] postRespond failed: ${resp.status} ${resp.statusText}`);
+    }
+  } catch (err) {
+    log.warn(`[cloud-relay] postRespond error: ${err.message}`);
+  }
+}
+async function postPush(state, body, log) {
+  const url = `${state.relayHttpUrl}/api/push`;
+  try {
+    log.info(`[cloud-relay] postPush -> ${url} userId=${body.userId} event=${body.event}`);
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      log.warn(`[cloud-relay] postPush failed: ${resp.status} ${resp.statusText} body=${text.slice(0, 200)}`);
+    } else {
+      log.info(`[cloud-relay] postPush ok: ${resp.status}`);
+    }
+    return resp.ok;
+  } catch (err) {
+    log.warn(`[cloud-relay] postPush error: ${err.message}`);
+    return false;
+  }
+}
+
+// src/state.ts
+var pluginRuntime = null;
+var gatewayChannelRuntime = null;
+var activeRequest = null;
+var relayState = null;
+var lastSessionKeyByUser = /* @__PURE__ */ new Map();
+function getPluginRuntime() {
+  return pluginRuntime;
+}
+function setPluginRuntime(rt) {
+  pluginRuntime = rt;
+}
+function setGatewayChannelRuntime(rt) {
+  gatewayChannelRuntime = rt;
+}
+function getActiveRequest() {
+  return activeRequest;
+}
+function setActiveRequest(req) {
+  activeRequest = req;
+}
+function getRelayState() {
+  return relayState;
+}
+function setRelayState(state) {
+  relayState = state;
+}
+function rememberSessionKey(userId, sessionKey) {
+  if (userId && sessionKey) lastSessionKeyByUser.set(userId, sessionKey);
+}
+function getLastSessionKey(userId) {
+  return lastSessionKeyByUser.get(userId);
+}
+function resolveChannelRuntime(ctx) {
+  return gatewayChannelRuntime || pluginRuntime?.channel || ctx?.channelRuntime || null;
+}
+
+// src/cancel.ts
+var TERMINAL_STATUSES = /* @__PURE__ */ new Set([
+  "succeeded",
+  "failed",
+  "timed_out",
+  "cancelled",
+  "lost"
+]);
+async function dispatchCancel(msg, state, ctx, log) {
+  const runId = msg.runId || "";
+  const sessionKey = msg.sessionKey || "";
+  const userId = msg.userId || state.username || "browser-user";
+  const reason = msg.reason || "user requested cancel";
+  if (!sessionKey) {
+    log.warn(`[cloud-relay] cancel missing sessionKey: user=${userId} runId=${runId}`);
+    await postRespond(state, { type: "error", text: "cancel missing sessionKey", runId, sessionKey, userId }, log);
+    return;
+  }
+  const tasks = getPluginRuntime()?.tasks?.runs;
+  if (!tasks) {
+    log.warn("[cloud-relay] cancel: tasks runtime unavailable");
+    await postRespond(state, { type: "error", text: "tasks runtime unavailable", runId, sessionKey, userId }, log);
+    return;
+  }
+  const bound = tasks.bindSession({ sessionKey });
+  const active = bound.list().filter((task) => !TERMINAL_STATUSES.has(task.status));
+  if (active.length === 0) {
+    log.info(`[cloud-relay] cancel: no active task for sessionKey=${sessionKey}`);
+    await postRespond(state, { type: "end", text: "", runId, sessionKey, userId }, log);
+    return;
+  }
+  const cancelled = [];
+  for (const task of active) {
+    const result = await bound.cancel({ taskId: task.id, cfg: ctx.cfg });
+    if (result.cancelled) {
+      cancelled.push(task.id);
+    } else {
+      log.warn(`[cloud-relay] cancel failed: taskId=${task.id} reason=${result.reason || "unknown"}`);
+    }
+  }
+  log.info(
+    `[cloud-relay] cancel done: sessionKey=${sessionKey} cancelled=${cancelled.length}/${active.length} reason="${reason}"`
+  );
+  await postRespond(state, { type: "end", text: "", runId, sessionKey, userId }, log);
+}
+
 // src/history.ts
 import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -128,49 +254,6 @@ function flattenContent(content) {
   return parts.join("");
 }
 
-// src/http-client.ts
-async function postRespond(state, body, log) {
-  try {
-    const resp = await fetch(`${state.relayHttpUrl}/api/respond`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${state.token}`
-      },
-      body: JSON.stringify(body)
-    });
-    if (!resp.ok) {
-      log.warn(`[cloud-relay] postRespond failed: ${resp.status} ${resp.statusText}`);
-    }
-  } catch (err) {
-    log.warn(`[cloud-relay] postRespond error: ${err.message}`);
-  }
-}
-async function postPush(state, body, log) {
-  const url = `${state.relayHttpUrl}/api/push`;
-  try {
-    log.info(`[cloud-relay] postPush -> ${url} userId=${body.userId} event=${body.event}`);
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${state.token}`
-      },
-      body: JSON.stringify(body)
-    });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      log.warn(`[cloud-relay] postPush failed: ${resp.status} ${resp.statusText} body=${text.slice(0, 200)}`);
-    } else {
-      log.info(`[cloud-relay] postPush ok: ${resp.status}`);
-    }
-    return resp.ok;
-  } catch (err) {
-    log.warn(`[cloud-relay] postPush error: ${err.message}`);
-    return false;
-  }
-}
-
 // src/reply-options.ts
 function buildReplyOptions(log, partialCtx) {
   return {
@@ -204,40 +287,6 @@ function buildReplyOptions(log, partialCtx) {
     onPatchSummary: async () => {
     }
   };
-}
-
-// src/state.ts
-var pluginRuntime = null;
-var gatewayChannelRuntime = null;
-var activeRequest = null;
-var relayState = null;
-var lastSessionKeyByUser = /* @__PURE__ */ new Map();
-function setPluginRuntime(rt) {
-  pluginRuntime = rt;
-}
-function setGatewayChannelRuntime(rt) {
-  gatewayChannelRuntime = rt;
-}
-function getActiveRequest() {
-  return activeRequest;
-}
-function setActiveRequest(req) {
-  activeRequest = req;
-}
-function getRelayState() {
-  return relayState;
-}
-function setRelayState(state) {
-  relayState = state;
-}
-function rememberSessionKey(userId, sessionKey) {
-  if (userId && sessionKey) lastSessionKeyByUser.set(userId, sessionKey);
-}
-function getLastSessionKey(userId) {
-  return lastSessionKeyByUser.get(userId);
-}
-function resolveChannelRuntime(ctx) {
-  return gatewayChannelRuntime || pluginRuntime?.channel || ctx?.channelRuntime || null;
 }
 
 // src/dispatch.ts
@@ -278,6 +327,9 @@ async function runInDispatchQueue(task) {
   }
 }
 async function dispatchRequest(msg, state, ctx, log, channelRuntime) {
+  if (msg.type === "cancel") {
+    return dispatchCancel(msg, state, ctx, log);
+  }
   const path = typeof msg.path === "string" ? msg.path : "";
   if (path === "/v1/chat/history") {
     return dispatchHistory(msg, state, ctx, log, channelRuntime);

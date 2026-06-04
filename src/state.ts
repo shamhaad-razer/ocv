@@ -1,13 +1,13 @@
-import type { ActiveRequest, ChannelRuntime, RelayState } from "./types.js";
+import type { ActiveRequest, ChannelRuntime, PluginRuntime, RelayState } from "./types.js";
 
-let pluginRuntime: { channel?: ChannelRuntime } | null = null;
+let pluginRuntime: PluginRuntime | null = null;
 let gatewayChannelRuntime: ChannelRuntime | null = null;
 let activeRequest: ActiveRequest | null = null;
 let relayState: RelayState | null = null;
 const lastSessionKeyByUser = new Map<string, string>();
 
 export function getPluginRuntime() { return pluginRuntime; }
-export function setPluginRuntime(rt: { channel?: ChannelRuntime } | null) { pluginRuntime = rt; }
+export function setPluginRuntime(rt: PluginRuntime | null) { pluginRuntime = rt; }
 
 export function getGatewayChannelRuntime() { return gatewayChannelRuntime; }
 export function setGatewayChannelRuntime(rt: ChannelRuntime | null) { gatewayChannelRuntime = rt; }
