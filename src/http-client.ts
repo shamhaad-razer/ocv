@@ -1,8 +1,17 @@
 import type { Log, RelayState } from "./types.js";
 
+export interface RespondBody {
+  type: "chunk" | "end" | "error" | "history";
+  text?: string;
+  messages?: unknown[];
+  runId: string;
+  sessionKey: string;
+  userId: string;
+}
+
 export async function postRespond(
   state: RelayState,
-  body: { type: "end" | "error"; text?: string; runId: string; sessionKey: string; userId: string },
+  body: RespondBody,
   log: Log,
 ): Promise<void> {
   try {
