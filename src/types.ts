@@ -65,6 +65,32 @@ export interface Log {
 export interface PluginApi {
   runtime?: { channel?: ChannelRuntime };
   registerChannel: (opts: { plugin: unknown }) => void;
+  registerTool?: (tool: BrowserTool, opts?: { optional?: boolean }) => void;
+}
+
+export interface ToolResultContent {
+  type: "text";
+  text: string;
+}
+
+export interface AgentToolResult {
+  content: ToolResultContent[];
+  isError?: boolean;
+}
+
+// Subset of openclaw's ToolDefinition this plugin uses. `execute` mirrors
+// openclaw's (toolCallId, params, signal, …) contract.
+export interface BrowserTool {
+  name: string;
+  label: string;
+  description: string;
+  promptSnippet?: string;
+  parameters: unknown;
+  execute(
+    toolCallId: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<AgentToolResult>;
 }
 
 export type OutboundMediaContext = {

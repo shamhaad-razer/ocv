@@ -7,6 +7,14 @@
   "channelEnvVars": {
     "cloud-relay": ["CLOUD_RELAY_TOKEN"]
   },
+  "contracts": {
+    "tools": ["get_user_location"]
+  },
+  "toolMetadata": {
+    "get_user_location": {
+      "optional": true
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

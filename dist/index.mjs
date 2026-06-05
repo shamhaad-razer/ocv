@@ -1,3 +1,132 @@
+// src/logger.ts
+var logger = {
+  info: (...args) => console.log(...args),
+  warn: (...args) => console.warn(...args),
+  error: (...args) => console.error(...args)
+};
+
+// src/state.ts
+var pluginRuntime = null;
+var gatewayChannelRuntime = null;
+var activeRequest = null;
+var relayState = null;
+var lastSessionKeyByUser = /* @__PURE__ */ new Map();
+function setPluginRuntime(rt) {
+  pluginRuntime = rt;
+}
+function setGatewayChannelRuntime(rt) {
+  gatewayChannelRuntime = rt;
+}
+function getActiveRequest() {
+  return activeRequest;
+}
+function setActiveRequest(req) {
+  activeRequest = req;
+}
+function getRelayState() {
+  return relayState;
+}
+function setRelayState(state) {
+  relayState = state;
+}
+function rememberSessionKey(userId, sessionKey) {
+  if (userId && sessionKey) lastSessionKeyByUser.set(userId, sessionKey);
+}
+function getLastSessionKey(userId) {
+  return lastSessionKeyByUser.get(userId);
+}
+function resolveChannelRuntime(ctx) {
+  return gatewayChannelRuntime || pluginRuntime?.channel || ctx?.channelRuntime || null;
+}
+
+// src/tools/invoke.ts
+async function invokeBrowserTool(tool, params, signal) {
+  const state = getRelayState();
+  if (!state || !state.username) {
+    return errorResult(
+      `${tool} unavailable: no active browser session is connected.`
+    );
+  }
+  const url = `${state.relayHttpUrl}/api/browser-tool/invoke`;
+  const startedAt = Date.now();
+  const paramsStr = JSON.stringify(params);
+  logger.info(`[browser-tool] \u2192 '${tool}' invoke user=${state.username} params=${paramsStr}`);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${state.token}`
+      },
+      body: JSON.stringify({ userId: state.username, tool, params }),
+      signal
+    });
+    const ms = Date.now() - startedAt;
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      logger.warn(`[browser-tool] \u2717 '${tool}' HTTP ${resp.status} (${ms}ms) ${body.slice(0, 200)}`);
+      return errorResult(`${tool} failed (HTTP ${resp.status}).`);
+    }
+    const json = await resp.json();
+    if (!json.ok || !json.text) {
+      logger.warn(`[browser-tool] \u2717 '${tool}' no result (${ms}ms) error=${json.error || "(none)"}`);
+      return errorResult(json.error || `${tool} returned no result.`);
+    }
+    const preview = json.text.length > 200 ? json.text.slice(0, 200) + "\u2026" : json.text;
+    logger.info(`[browser-tool] \u2190 '${tool}' ok (${ms}ms, ${json.text.length} chars): ${preview}`);
+    return { content: [{ type: "text", text: json.text }] };
+  } catch (err) {
+    const ms = Date.now() - startedAt;
+    if (err.name === "AbortError") {
+      logger.info(`[browser-tool] \u2A2F '${tool}' aborted (${ms}ms)`);
+      return errorResult(`${tool} was cancelled.`);
+    }
+    const msg = err.message || "unknown error";
+    logger.warn(`[browser-tool] \u2717 '${tool}' error (${ms}ms): ${msg}`);
+    return errorResult(`${tool} error: ${msg}`);
+  }
+}
+function errorResult(message) {
+  return { content: [{ type: "text", text: message }], isError: true };
+}
+
+// src/tools/location.ts
+var LOCATION_PARAMS = {
+  type: "object",
+  additionalProperties: false,
+  properties: {},
+  required: []
+};
+function locationTool() {
+  return {
+    name: "get_user_location",
+    label: "Get location",
+    description: "Get the user's current geographic location (latitude/longitude, and a human-readable place name when available) from their device. Call this whenever you need to know WHERE the user is to answer \u2014 e.g. they ask about nearby places, local weather, directions, or 'where am I'. Prompts the user's browser for location permission.",
+    promptSnippet: "get_user_location: get the user's current location when they ask about nearby places, local conditions, or where they are.",
+    parameters: LOCATION_PARAMS,
+    execute(_toolCallId, _params, signal) {
+      return invokeBrowserTool("get_user_location", {}, signal);
+    }
+  };
+}
+
+// src/tools/index.ts
+function registerBrowserTools(api) {
+  if (typeof api.registerTool !== "function") {
+    logger.warn("[cloud-relay] registerTool unavailable; browser tools not registered");
+    return;
+  }
+  const tools = [
+    locationTool()
+  ];
+  for (const tool of tools) {
+    api.registerTool(tool, { optional: true });
+  }
+  logger.info(
+    `[cloud-relay] registered agent tools: ${tools.map((t) => t.name).join(", ")}`
+  );
+}
+
 // src/constants.ts
 var DEFAULT_RELAY_URL = "https://ocv.razer.ai";
 var RECONNECT_DELAYS = [1e3, 2e3, 4e3, 8e3, 16e3, 3e4];
@@ -204,40 +333,6 @@ function buildReplyOptions(log, partialCtx) {
     onPatchSummary: async () => {
     }
   };
-}
-
-// src/state.ts
-var pluginRuntime = null;
-var gatewayChannelRuntime = null;
-var activeRequest = null;
-var relayState = null;
-var lastSessionKeyByUser = /* @__PURE__ */ new Map();
-function setPluginRuntime(rt) {
-  pluginRuntime = rt;
-}
-function setGatewayChannelRuntime(rt) {
-  gatewayChannelRuntime = rt;
-}
-function getActiveRequest() {
-  return activeRequest;
-}
-function setActiveRequest(req) {
-  activeRequest = req;
-}
-function getRelayState() {
-  return relayState;
-}
-function setRelayState(state) {
-  relayState = state;
-}
-function rememberSessionKey(userId, sessionKey) {
-  if (userId && sessionKey) lastSessionKeyByUser.set(userId, sessionKey);
-}
-function getLastSessionKey(userId) {
-  return lastSessionKeyByUser.get(userId);
-}
-function resolveChannelRuntime(ctx) {
-  return gatewayChannelRuntime || pluginRuntime?.channel || ctx?.channelRuntime || null;
 }
 
 // src/dispatch.ts
@@ -626,6 +721,7 @@ var index_default = {
   register(api) {
     setPluginRuntime(api.runtime || null);
     api.registerChannel({ plugin: cloudRelayPlugin });
+    registerBrowserTools(api);
   }
 };
 export {
