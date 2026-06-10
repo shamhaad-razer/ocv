@@ -4,7 +4,7 @@ import { resolveDefaultAgentId } from "./config.js";
 import { readHistory } from "./history.js";
 import { postRespond } from "./http-client.js";
 import { buildReplyOptions } from "./reply-options.js";
-import { getActiveRequest, rememberSessionKey, setActiveRequest } from "./state.js";
+import { getActiveRequest, rememberSessionKey, setActiveRequest, setCurrentReplyGuidance } from "./state.js";
 import type { ChannelRuntime, GatewayContext, Log, RelayState } from "./types.js";
 
 let dispatchQueueTail: Promise<void> = Promise.resolve();
@@ -121,11 +121,18 @@ export async function dispatchChat(
   const incoming = JSON.parse(Buffer.from(msg.body as string, "base64").toString()) as {
     messages?: Array<{ role?: string; content?: string }>;
     user?: string;
+    openclaw?: { source?: string; systemGuidance?: string };
   };
   const messages = incoming.messages || [];
   const lastMessage = messages[messages.length - 1];
   const text = lastMessage?.content || "";
   const userId = relayUserId || incoming.user || state.username || "browser-user";
+  // Per-request reply guidance from the server. The before_prompt_build hook
+  // appends it to the system prompt; falls back to the built-in default when
+  // the server doesn't supply one. Trimmed to ignore empty/whitespace values.
+  const serverGuidance = typeof incoming.openclaw?.systemGuidance === "string"
+    ? incoming.openclaw.systemGuidance.trim()
+    : "";
 
   const respondCtx = { runId: relayRunId, sessionKey: relaySessionKey, userId };
 
@@ -138,8 +145,6 @@ export async function dispatchChat(
     return;
   }
 
-  const systemMsg = messages.find((m) => m.role === "system");
-  const voicePrefix = systemMsg ? `[${systemMsg.content}]\n\n` : "";
   const startedAt = Date.now();
 
   const cfg = ctx.cfg;
@@ -160,7 +165,7 @@ export async function dispatchChat(
   const ctxPayload = {
     SessionKey: sessionKey,
     Body: text,
-    BodyForAgent: voicePrefix + text,
+    BodyForAgent: text,
     RawBody: text,
     CommandBody: text,
     From: `${CHANNEL_ID}:${userId}`,
@@ -183,43 +188,51 @@ export async function dispatchChat(
 
     const streamState = { sentFinal: false };
     setActiveRequest({ relayState: state, log, streamState, respondCtx });
+    // Expose the server-supplied guidance to the before_prompt_build hook for
+    // the duration of this dispatch (empty → hook uses its built-in default).
+    // Cleared in `finally` so it never leaks into a later turn.
+    setCurrentReplyGuidance(serverGuidance || null);
     let hadError = false;
     let deliveredChars = 0;
 
-    await channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
-      ctx: ctxPayload,
-      cfg,
-      dispatcherOptions: {
-        deliver: async (block: { text?: string }) => {
-          const blockText = block.text || "";
-          if (blockText && !streamState.sentFinal) {
-            streamState.sentFinal = true;
-            deliveredChars += blockText.length;
-            await postRespond(state, { type: "end", text: blockText, ...respondCtx }, log);
-          }
-          return { ok: true };
+    try {
+      await channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
+        ctx: ctxPayload,
+        cfg,
+        dispatcherOptions: {
+          deliver: async (block: { text?: string }) => {
+            const blockText = block.text || "";
+            if (blockText && !streamState.sentFinal) {
+              streamState.sentFinal = true;
+              deliveredChars += blockText.length;
+              await postRespond(state, { type: "end", text: blockText, ...respondCtx }, log);
+            }
+            return { ok: true };
+          },
+          onError: (err: Error | null) => {
+            hadError = true;
+            log.warn(`[cloud-relay] dispatch error: user=${userId} ${err?.message}`);
+            if (!streamState.sentFinal) {
+              streamState.sentFinal = true;
+              postRespond(state, { type: "error", text: err?.message || "Unknown error", ...respondCtx }, log);
+            }
+          },
         },
-        onError: (err: Error | null) => {
-          hadError = true;
-          log.warn(`[cloud-relay] dispatch error: user=${userId} ${err?.message}`);
-          if (!streamState.sentFinal) {
-            streamState.sentFinal = true;
-            postRespond(state, { type: "error", text: err?.message || "Unknown error", ...respondCtx }, log);
-          }
+        replyOptions: {
+          ...buildReplyOptions(log, { state, respondCtx, streamState }),
+          sourceReplyDeliveryMode: "normal",
+          suppressDefaultToolProgressMessages: true,
         },
-      },
-      replyOptions: {
-        ...buildReplyOptions(log, { state, respondCtx, streamState }),
-        sourceReplyDeliveryMode: "normal",
-        suppressDefaultToolProgressMessages: true,
-      },
-    });
+      });
+    } finally {
+      setCurrentReplyGuidance(null);
+      setActiveRequest(null);
+    }
 
     if (!hadError && !streamState.sentFinal) {
       await postRespond(state, { type: "end", ...respondCtx }, log);
     }
 
-    setActiveRequest(null);
     log.info(
       `[cloud-relay] request completed: user=${userId} ` +
       `chars=${deliveredChars} hadError=${hadError} durationMs=${Date.now() - startedAt}`,
