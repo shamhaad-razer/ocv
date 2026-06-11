@@ -650,12 +650,28 @@ var index_default = {
         );
         return void 0;
       }
+      const containsVoice = guidanceForLLM.includes("currently in voice mode");
+      const containsText = guidanceForLLM.includes("currently in text mode");
       console.log(
-        `[cloud-relay] before_prompt_build: injecting reply guidance into system prompt (channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}, ${guidanceForLLM.length} chars)`
+        `[cloud-relay] before_prompt_build: injecting reply guidance into system prompt (channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}, ${guidanceForLLM.length} chars, voiceSuffix=${containsVoice}, textSuffix=${containsText})`
       );
+      console.log(`[cloud-relay-diag] guidance returned: ${JSON.stringify(guidanceForLLM)}`);
       return { appendSystemContext: guidanceForLLM };
     });
     console.log("[cloud-relay] registered before_prompt_build hook for reply guidance");
+    api.on?.("llm_input", (event, ctx) => {
+      const channel = ctx.messageProvider || ctx.channelId;
+      if (channel !== CHANNEL_ID) return;
+      const sys = event.systemPrompt ?? "";
+      const lastUser = event.prompt ?? "";
+      const sysTail = sys.length > 800 ? "..." + sys.slice(-800) : sys;
+      const containsVoice = sys.includes("currently in voice mode");
+      const containsText = sys.includes("currently in text mode");
+      console.log(
+        `[cloud-relay-diag] llm_input runId=${event.runId} model=${event.model} systemPromptLen=${sys.length} containsVoiceSuffix=${containsVoice} containsTextSuffix=${containsText} userPrompt=${JSON.stringify(lastUser).slice(0, 120)}`
+      );
+      console.log(`[cloud-relay-diag] systemPrompt tail (last ~800 chars): ${JSON.stringify(sysTail)}`);
+    });
   }
 };
 export {
