@@ -11,35 +11,36 @@ export default {
     setPluginRuntime(api.runtime || null);
     api.registerChannel({ plugin: cloudRelayPlugin });
 
-    // Append server-supplied reply guidance to the system prompt for
-    // cloud-relay turns. before_prompt_build is a GLOBAL hook - it fires for
-    // every channel - so we scope it to this surface by channel id and no-op
-    // for Telegram/Discord/etc. The guidance text comes entirely from the
-    // server (openclaw.systemGuidance, surfaced via getCurrentReplyGuidance);
-    // when the server doesn't send any, the plugin injects nothing and leaves
-    // the system prompt untouched. Injecting via appendSystemContext keeps it
-    // out of the persisted user message and lets prompt-caching amortize cost.
-    if (typeof api.on === "function") {
-      api.on("before_prompt_build", (_event, ctx) => {
-        const channel = ctx.messageProvider || ctx.channelId;
-        if (channel !== CHANNEL_ID) return undefined;
-        const guidance = getCurrentReplyGuidance();
-        if (!guidance) return undefined;
+    // Append per-turn guidance from the browser to the system prompt for
+    // cloud-relay turns. The frontend builds the full string
+    // (RELAY_REPLY_GUIDANCE + voice/text mode suffix) and ships it under
+    // openclaw.guidanceForLLM; we only forward it here.
+    // before_prompt_build is a GLOBAL hook — it fires for every channel — so we
+    // scope it to this surface by channel id and no-op for Telegram/Discord/etc.
+    // Injecting via appendSystemContext keeps it out of the persisted user
+    // message and lets provider prompt-caching amortize the token cost.
+    api.on?.("before_prompt_build", (_event, ctx) => {
+      const channel = ctx.messageProvider || ctx.channelId;
+      if (channel !== CHANNEL_ID) {
         console.log(
-          `[cloud-relay] before_prompt_build: injecting server reply guidance into system prompt `
-          + `(channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}, ${guidance.length} chars)`,
+          `[cloud-relay] before_prompt_build: skip (channel=${channel ?? "?"}, not ${CHANNEL_ID}) — system prompt unchanged`,
         );
-        return { appendSystemContext: guidance };
-      });
-    } else {
-      // Host doesn't expose typed hook registration - server-supplied reply
-      // guidance can't be injected, so the agent may go silent (NO_REPLY) in
-      // the app. Surfaced as a warning because it's a real capability gap, not
-      // a per-turn event.
-      console.warn(
-        "[cloud-relay] api.on unavailable - before_prompt_build hook not registered; "
-        + "server reply guidance will not be injected",
+        return undefined;
+      }
+      const guidanceForLLM = getCurrentReplyGuidance() || "";
+      if (!guidanceForLLM) {
+        console.log(
+          `[cloud-relay] before_prompt_build: no guidance supplied for this turn `
+          + `(channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}) — system prompt unchanged`,
+        );
+        return undefined;
+      }
+      console.log(
+        `[cloud-relay] before_prompt_build: injecting reply guidance into system prompt `
+        + `(channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}, ${guidanceForLLM.length} chars)`,
       );
-    }
+      return { appendSystemContext: guidanceForLLM };
+    });
+    console.log("[cloud-relay] registered before_prompt_build hook for reply guidance");
   },
 };

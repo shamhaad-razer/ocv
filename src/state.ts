@@ -6,7 +6,7 @@ let activeRequest: ActiveRequest | null = null;
 let relayState: RelayState | null = null;
 const lastSessionKeyByUser = new Map<string, string>();
 // Reply guidance for the in-flight cloud-relay turn, supplied per-request by
-// the server (openclaw.systemGuidance). Read by the before_prompt_build hook.
+// the browser (openclaw.guidanceForLLM). Read by the before_prompt_build hook.
 // Safe as a single module-level value because dispatch is serialized through
 // runInDispatchQueue — only one cloud-relay turn is ever in flight at a time.
 let currentReplyGuidance: string | null = null;

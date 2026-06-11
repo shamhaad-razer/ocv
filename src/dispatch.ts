@@ -121,17 +121,18 @@ export async function dispatchChat(
   const incoming = JSON.parse(Buffer.from(msg.body as string, "base64").toString()) as {
     messages?: Array<{ role?: string; content?: string }>;
     user?: string;
-    openclaw?: { source?: string; systemGuidance?: string };
+    openclaw?: { guidanceForLLM?: string };
   };
   const messages = incoming.messages || [];
   const lastMessage = messages[messages.length - 1];
   const text = lastMessage?.content || "";
   const userId = relayUserId || incoming.user || state.username || "browser-user";
-  // Per-request reply guidance from the server. The before_prompt_build hook
-  // appends it to the system prompt; falls back to the built-in default when
-  // the server doesn't supply one. Trimmed to ignore empty/whitespace values.
-  const serverGuidance = typeof incoming.openclaw?.systemGuidance === "string"
-    ? incoming.openclaw.systemGuidance.trim()
+  // Per-request system-prompt guidance the browser built for this turn.
+  // The before_prompt_build hook appends it verbatim to the agent's
+  // system prompt; empty/missing means no append. Trimmed to ignore
+  // whitespace-only values from older clients.
+  const guidanceForLLM = typeof incoming.openclaw?.guidanceForLLM === "string"
+    ? incoming.openclaw.guidanceForLLM.trim()
     : "";
 
   const respondCtx = { runId: relayRunId, sessionKey: relaySessionKey, userId };
@@ -188,10 +189,10 @@ export async function dispatchChat(
 
     const streamState = { sentFinal: false };
     setActiveRequest({ relayState: state, log, streamState, respondCtx });
-    // Expose the server-supplied guidance to the before_prompt_build hook for
-    // the duration of this dispatch (empty → hook uses its built-in default).
+    // Expose the per-turn guidance to the before_prompt_build hook for
+    // the duration of this dispatch (empty/missing → hook appends nothing).
     // Cleared in `finally` so it never leaks into a later turn.
-    setCurrentReplyGuidance(serverGuidance || null);
+    setCurrentReplyGuidance(guidanceForLLM || null);
     let hadError = false;
     let deliveredChars = 0;
 

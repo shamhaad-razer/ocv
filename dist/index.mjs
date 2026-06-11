@@ -332,7 +332,7 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
   const lastMessage = messages[messages.length - 1];
   const text = lastMessage?.content || "";
   const userId = relayUserId || incoming.user || state.username || "browser-user";
-  const serverGuidance = typeof incoming.openclaw?.systemGuidance === "string" ? incoming.openclaw.systemGuidance.trim() : "";
+  const guidanceForLLM = typeof incoming.openclaw?.guidanceForLLM === "string" ? incoming.openclaw.guidanceForLLM.trim() : "";
   const respondCtx = { runId: relayRunId, sessionKey: relaySessionKey, userId };
   if (relaySessionKey) rememberSessionKey(userId, relaySessionKey);
   bootstrapOwnerIfNeeded(ctx.cfg, log);
@@ -377,7 +377,7 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
     });
     const streamState = { sentFinal: false };
     setActiveRequest({ relayState: state, log, streamState, respondCtx });
-    setCurrentReplyGuidance(serverGuidance || null);
+    setCurrentReplyGuidance(guidanceForLLM || null);
     let hadError = false;
     let deliveredChars = 0;
     try {
@@ -635,22 +635,27 @@ var index_default = {
   register(api) {
     setPluginRuntime(api.runtime || null);
     api.registerChannel({ plugin: cloudRelayPlugin });
-    if (typeof api.on === "function") {
-      api.on("before_prompt_build", (_event, ctx) => {
-        const channel = ctx.messageProvider || ctx.channelId;
-        if (channel !== CHANNEL_ID) return void 0;
-        const guidance = getCurrentReplyGuidance();
-        if (!guidance) return void 0;
+    api.on?.("before_prompt_build", (_event, ctx) => {
+      const channel = ctx.messageProvider || ctx.channelId;
+      if (channel !== CHANNEL_ID) {
         console.log(
-          `[cloud-relay] before_prompt_build: injecting server reply guidance into system prompt (channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}, ${guidance.length} chars)`
+          `[cloud-relay] before_prompt_build: skip (channel=${channel ?? "?"}, not ${CHANNEL_ID}) \u2014 system prompt unchanged`
         );
-        return { appendSystemContext: guidance };
-      });
-    } else {
-      console.warn(
-        "[cloud-relay] api.on unavailable - before_prompt_build hook not registered; server reply guidance will not be injected"
+        return void 0;
+      }
+      const guidanceForLLM = getCurrentReplyGuidance() || "";
+      if (!guidanceForLLM) {
+        console.log(
+          `[cloud-relay] before_prompt_build: no guidance supplied for this turn (channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}) \u2014 system prompt unchanged`
+        );
+        return void 0;
+      }
+      console.log(
+        `[cloud-relay] before_prompt_build: injecting reply guidance into system prompt (channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}, ${guidanceForLLM.length} chars)`
       );
-    }
+      return { appendSystemContext: guidanceForLLM };
+    });
+    console.log("[cloud-relay] registered before_prompt_build hook for reply guidance");
   }
 };
 export {
