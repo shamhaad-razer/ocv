@@ -6,7 +6,6 @@ var DEFAULT_ACCOUNT_ID = "default";
 var DEFAULT_AGENT_ID = "main";
 var TOKEN_POLL_INTERVAL_MS = 5e3;
 var MAX_OUTBOUND_MEDIA_BYTES = 15 * 1024 * 1024;
-var RELAY_REPLY_GUIDANCE = 'You are replying inside an interactive app where the user is waiting for a response (often a live voice call, read aloud). Always reply with a short, natural line \u2014 even to brief messages like "okay", "thanks", or "stop". Never stay silent or respond with NO_REPLY.';
 
 // src/config.ts
 function resolveChannelConfig(cfg) {
@@ -636,22 +635,22 @@ var index_default = {
   register(api) {
     setPluginRuntime(api.runtime || null);
     api.registerChannel({ plugin: cloudRelayPlugin });
-    api.on?.("before_prompt_build", (_event, ctx) => {
-      const channel = ctx.messageProvider || ctx.channelId;
-      if (channel !== CHANNEL_ID) {
+    if (typeof api.on === "function") {
+      api.on("before_prompt_build", (_event, ctx) => {
+        const channel = ctx.messageProvider || ctx.channelId;
+        if (channel !== CHANNEL_ID) return void 0;
+        const guidance = getCurrentReplyGuidance();
+        if (!guidance) return void 0;
         console.log(
-          `[cloud-relay] before_prompt_build: skip (channel=${channel ?? "?"}, not ${CHANNEL_ID}) \u2014 system prompt unchanged`
+          `[cloud-relay] before_prompt_build: injecting server reply guidance into system prompt (channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}, ${guidance.length} chars)`
         );
-        return void 0;
-      }
-      const guidance = getCurrentReplyGuidance() || RELAY_REPLY_GUIDANCE;
-      const fromServer = Boolean(getCurrentReplyGuidance());
-      console.log(
-        `[cloud-relay] before_prompt_build: injecting reply guidance into system prompt (channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}, ${guidance.length} chars, source=${fromServer ? "server" : "default"})`
+        return { appendSystemContext: guidance };
+      });
+    } else {
+      console.warn(
+        "[cloud-relay] api.on unavailable \u2014 before_prompt_build hook not registered; server reply guidance will not be injected"
       );
-      return { appendSystemContext: guidance };
-    });
-    console.log("[cloud-relay] registered before_prompt_build hook for reply guidance");
+    }
   }
 };
 export {
