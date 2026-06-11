@@ -212,6 +212,7 @@ var gatewayChannelRuntime = null;
 var activeRequest = null;
 var relayState = null;
 var lastSessionKeyByUser = /* @__PURE__ */ new Map();
+var currentReplyGuidance = null;
 function setPluginRuntime(rt) {
   pluginRuntime = rt;
 }
@@ -229,6 +230,12 @@ function getRelayState() {
 }
 function setRelayState(state) {
   relayState = state;
+}
+function getCurrentReplyGuidance() {
+  return currentReplyGuidance;
+}
+function setCurrentReplyGuidance(guidance) {
+  currentReplyGuidance = guidance;
 }
 function rememberSessionKey(userId, sessionKey) {
   if (userId && sessionKey) lastSessionKeyByUser.set(userId, sessionKey);
@@ -325,6 +332,7 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
   const lastMessage = messages[messages.length - 1];
   const text = lastMessage?.content || "";
   const userId = relayUserId || incoming.user || state.username || "browser-user";
+  const guidanceForLLM = typeof incoming.openclaw?.guidanceForLLM === "string" ? incoming.openclaw.guidanceForLLM.trim() : "";
   const respondCtx = { runId: relayRunId, sessionKey: relaySessionKey, userId };
   if (relaySessionKey) rememberSessionKey(userId, relaySessionKey);
   bootstrapOwnerIfNeeded(ctx.cfg, log);
@@ -332,10 +340,6 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
     log.warn(`[cloud-relay] dispatchChat empty message: user=${userId}`);
     return;
   }
-  const systemMsg = messages.find((m) => m.role === "system");
-  const voicePrefix = systemMsg ? `[${systemMsg.content}]
-
-` : "";
   const startedAt = Date.now();
   const cfg = ctx.cfg;
   const agentId = resolveDefaultAgentId(cfg);
@@ -352,7 +356,7 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
   const ctxPayload = {
     SessionKey: sessionKey,
     Body: text,
-    BodyForAgent: voicePrefix + text,
+    BodyForAgent: text,
     RawBody: text,
     CommandBody: text,
     From: `${CHANNEL_ID}:${userId}`,
@@ -373,40 +377,45 @@ async function dispatchChat(msg, state, ctx, log, channelRuntime) {
     });
     const streamState = { sentFinal: false };
     setActiveRequest({ relayState: state, log, streamState, respondCtx });
+    setCurrentReplyGuidance(guidanceForLLM || null);
     let hadError = false;
     let deliveredChars = 0;
-    await channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
-      ctx: ctxPayload,
-      cfg,
-      dispatcherOptions: {
-        deliver: async (block) => {
-          const blockText = block.text || "";
-          if (blockText && !streamState.sentFinal) {
-            streamState.sentFinal = true;
-            deliveredChars += blockText.length;
-            await postRespond(state, { type: "end", text: blockText, ...respondCtx }, log);
+    try {
+      await channelRuntime.reply.dispatchReplyWithBufferedBlockDispatcher({
+        ctx: ctxPayload,
+        cfg,
+        dispatcherOptions: {
+          deliver: async (block) => {
+            const blockText = block.text || "";
+            if (blockText && !streamState.sentFinal) {
+              streamState.sentFinal = true;
+              deliveredChars += blockText.length;
+              await postRespond(state, { type: "end", text: blockText, ...respondCtx }, log);
+            }
+            return { ok: true };
+          },
+          onError: (err) => {
+            hadError = true;
+            log.warn(`[cloud-relay] dispatch error: user=${userId} ${err?.message}`);
+            if (!streamState.sentFinal) {
+              streamState.sentFinal = true;
+              postRespond(state, { type: "error", text: err?.message || "Unknown error", ...respondCtx }, log);
+            }
           }
-          return { ok: true };
         },
-        onError: (err) => {
-          hadError = true;
-          log.warn(`[cloud-relay] dispatch error: user=${userId} ${err?.message}`);
-          if (!streamState.sentFinal) {
-            streamState.sentFinal = true;
-            postRespond(state, { type: "error", text: err?.message || "Unknown error", ...respondCtx }, log);
-          }
+        replyOptions: {
+          ...buildReplyOptions(log, { state, respondCtx, streamState }),
+          sourceReplyDeliveryMode: "normal",
+          suppressDefaultToolProgressMessages: true
         }
-      },
-      replyOptions: {
-        ...buildReplyOptions(log, { state, respondCtx, streamState }),
-        sourceReplyDeliveryMode: "normal",
-        suppressDefaultToolProgressMessages: true
-      }
-    });
+      });
+    } finally {
+      setCurrentReplyGuidance(null);
+      setActiveRequest(null);
+    }
     if (!hadError && !streamState.sentFinal) {
       await postRespond(state, { type: "end", ...respondCtx }, log);
     }
-    setActiveRequest(null);
     log.info(
       `[cloud-relay] request completed: user=${userId} chars=${deliveredChars} hadError=${hadError} durationMs=${Date.now() - startedAt}`
     );
@@ -626,6 +635,27 @@ var index_default = {
   register(api) {
     setPluginRuntime(api.runtime || null);
     api.registerChannel({ plugin: cloudRelayPlugin });
+    api.on?.("before_prompt_build", (_event, ctx) => {
+      const channel = ctx.messageProvider || ctx.channelId;
+      if (channel !== CHANNEL_ID) {
+        console.log(
+          `[cloud-relay] before_prompt_build: skip (channel=${channel ?? "?"}, not ${CHANNEL_ID}) - system prompt unchanged`
+        );
+        return void 0;
+      }
+      const guidanceForLLM = getCurrentReplyGuidance() || "";
+      if (!guidanceForLLM) {
+        console.log(
+          `[cloud-relay] before_prompt_build: no guidance supplied for this turn (channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}) - system prompt unchanged`
+        );
+        return void 0;
+      }
+      console.log(
+        `[cloud-relay] before_prompt_build: injecting reply guidance into system prompt (channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}, ${guidanceForLLM.length} chars)`
+      );
+      return { appendSystemContext: guidanceForLLM };
+    });
+    console.log("[cloud-relay] registered before_prompt_build hook for reply guidance");
   }
 };
 export {

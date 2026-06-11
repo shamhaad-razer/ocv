@@ -62,9 +62,41 @@ export interface Log {
   error: (...args: unknown[]) => void;
 }
 
+// Subset of the OpenClaw `before_prompt_build` hook surface we use. The full
+// types live in the openclaw package (hook-types.d.ts); we mirror only what
+// this plugin reads/returns to avoid a hard dependency on the host's types.
+export interface BeforePromptBuildEvent {
+  prompt: string;
+  messages: unknown[];
+}
+
+export interface BeforePromptBuildContext {
+  // Originating channel for this turn — "cloud-relay" for our surface,
+  // "telegram"/"discord"/… for others. Used to scope prompt injection to
+  // relay turns only.
+  messageProvider?: string;
+  channelId?: string;
+  sessionKey?: string;
+}
+
+export interface BeforePromptBuildResult {
+  // Appended to the system prompt (cacheable, not persisted to user history).
+  appendSystemContext?: string;
+}
+
 export interface PluginApi {
   runtime?: { channel?: ChannelRuntime };
   registerChannel: (opts: { plugin: unknown }) => void;
+  // Typed hook registration. We only use "before_prompt_build"; the signature
+  // is intentionally narrow. Optional because older hosts may not expose it.
+  on?: (
+    hookName: "before_prompt_build",
+    handler: (
+      event: BeforePromptBuildEvent,
+      ctx: BeforePromptBuildContext,
+    ) => BeforePromptBuildResult | undefined | Promise<BeforePromptBuildResult | undefined>,
+    opts?: { priority?: number; timeoutMs?: number },
+  ) => void;
 }
 
 export type OutboundMediaContext = {
