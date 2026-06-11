@@ -61,17 +61,7 @@ export async function readHistory(params: ReadHistoryParams): Promise<HistoryMes
     throw err;
   }
 
-  // Two-pass build. The codex/agent-harness sometimes writes the same
-  // user turn twice when a model call has to retry (rate-limit failover,
-  // etc.) — the second user line carries the original line's id as its
-  // parentId. We need to keep the original (the canonical inbound message
-  // a human sent) and drop the retry copy, otherwise the browser's chat
-  // history shows the user's message duplicated after a page reload.
-  // Pass 1 collects every user-role line so we can match parentId
-  // against prior user-role ids. Pass 2 emits the actual messages,
-  // skipping the retries.
-  const userIds = new Set<string>();
-  const parsed: Array<{ id: string; role: string; content: string; parentId: string | undefined; timestamp: number | undefined }> = [];
+  const messages: HistoryMessage[] = [];
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -88,17 +78,12 @@ export async function readHistory(params: ReadHistoryParams): Promise<HistoryMes
     if (role !== "user" && role !== "assistant") continue;
     const content = flattenContent(message.content);
     if (!content) continue;
-    const id = typeof entry.id === "string" ? entry.id : `${parsed.length}`;
-    const parentId = typeof entry.parentId === "string" ? entry.parentId : undefined;
-    if (role === "user") userIds.add(id);
-    parsed.push({ id, role, content, parentId, timestamp: typeof entry.timestamp === "number" ? entry.timestamp : undefined });
-  }
-
-  const messages: HistoryMessage[] = [];
-  for (const m of parsed) {
-    // Drop user lines that are retry copies of an earlier user line.
-    if (m.role === "user" && m.parentId && userIds.has(m.parentId)) continue;
-    messages.push({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp });
+    messages.push({
+      id: typeof entry.id === "string" ? entry.id : `${messages.length}`,
+      role,
+      content,
+      timestamp: typeof entry.timestamp === "number" ? entry.timestamp : undefined,
+    });
   }
 
   return messages.slice(-limit);

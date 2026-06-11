@@ -87,8 +87,7 @@ async function readHistory(params) {
     }
     throw err;
   }
-  const userIds = /* @__PURE__ */ new Set();
-  const parsed = [];
+  const messages = [];
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -105,15 +104,12 @@ async function readHistory(params) {
     if (role !== "user" && role !== "assistant") continue;
     const content = flattenContent(message.content);
     if (!content) continue;
-    const id = typeof entry2.id === "string" ? entry2.id : `${parsed.length}`;
-    const parentId = typeof entry2.parentId === "string" ? entry2.parentId : void 0;
-    if (role === "user") userIds.add(id);
-    parsed.push({ id, role, content, parentId, timestamp: typeof entry2.timestamp === "number" ? entry2.timestamp : void 0 });
-  }
-  const messages = [];
-  for (const m of parsed) {
-    if (m.role === "user" && m.parentId && userIds.has(m.parentId)) continue;
-    messages.push({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp });
+    messages.push({
+      id: typeof entry2.id === "string" ? entry2.id : `${messages.length}`,
+      role,
+      content,
+      timestamp: typeof entry2.timestamp === "number" ? entry2.timestamp : void 0
+    });
   }
   return messages.slice(-limit);
 }
