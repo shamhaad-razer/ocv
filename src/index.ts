@@ -12,8 +12,8 @@ export default {
     api.registerChannel({ plugin: cloudRelayPlugin });
 
     // Append server-supplied reply guidance to the system prompt for
-    // cloud-relay turns. before_prompt_build is a GLOBAL hook — it fires for
-    // every channel — so we scope it to this surface by channel id and no-op
+    // cloud-relay turns. before_prompt_build is a GLOBAL hook - it fires for
+    // every channel - so we scope it to this surface by channel id and no-op
     // for Telegram/Discord/etc. The guidance text comes entirely from the
     // server (openclaw.systemGuidance, surfaced via getCurrentReplyGuidance);
     // when the server doesn't send any, the plugin injects nothing and leaves
@@ -32,12 +32,12 @@ export default {
         return { appendSystemContext: guidance };
       });
     } else {
-      // Host doesn't expose typed hook registration — server-supplied reply
+      // Host doesn't expose typed hook registration - server-supplied reply
       // guidance can't be injected, so the agent may go silent (NO_REPLY) in
       // the app. Surfaced as a warning because it's a real capability gap, not
       // a per-turn event.
       console.warn(
-        "[cloud-relay] api.on unavailable — before_prompt_build hook not registered; "
+        "[cloud-relay] api.on unavailable - before_prompt_build hook not registered; "
         + "server reply guidance will not be injected",
       );
     }

@@ -648,7 +648,7 @@ var index_default = {
       });
     } else {
       console.warn(
-        "[cloud-relay] api.on unavailable \u2014 before_prompt_build hook not registered; server reply guidance will not be injected"
+        "[cloud-relay] api.on unavailable - before_prompt_build hook not registered; server reply guidance will not be injected"
       );
     }
   }
