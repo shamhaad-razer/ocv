@@ -639,7 +639,13 @@ var index_default = {
   register(api) {
     setPluginRuntime(api.runtime || null);
     api.registerChannel({ plugin: cloudRelayPlugin });
-    api.on?.("before_prompt_build", (_event, ctx) => {
+    if (typeof api.on !== "function") {
+      console.warn(
+        "[cloud-relay] api.on unavailable - before_prompt_build hook not registered; reply guidance will not be injected"
+      );
+      return;
+    }
+    api.on("before_prompt_build", (_event, ctx) => {
       const channel = ctx.messageProvider || ctx.channelId;
       if (channel !== CHANNEL_ID) {
         console.log(
@@ -663,7 +669,7 @@ var index_default = {
       return { appendSystemContext: guidanceForLLM };
     });
     console.log("[cloud-relay] registered before_prompt_build hook for reply guidance");
-    api.on?.("llm_input", (event, ctx) => {
+    api.on("llm_input", (event, ctx) => {
       const channel = ctx.messageProvider || ctx.channelId;
       if (channel !== CHANNEL_ID) return;
       const sys = event.systemPrompt ?? "";

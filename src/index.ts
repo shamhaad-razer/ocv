@@ -19,7 +19,19 @@ export default {
     // scope it to this surface by channel id and no-op for Telegram/Discord/etc.
     // Injecting via appendSystemContext keeps it out of the persisted user
     // message and lets provider prompt-caching amortize the token cost.
-    api.on?.("before_prompt_build", (_event, ctx) => {
+    if (typeof api.on !== "function") {
+      // Host doesn't expose typed hook registration - per-turn reply guidance
+      // can't be injected, so the agent may go silent (NO_REPLY) in the app.
+      // Surfaced as a warning because it's a real capability gap, not a
+      // per-turn event.
+      console.warn(
+        "[cloud-relay] api.on unavailable - before_prompt_build hook not registered; "
+        + "reply guidance will not be injected",
+      );
+      return;
+    }
+
+    api.on("before_prompt_build", (_event, ctx) => {
       const channel = ctx.messageProvider || ctx.channelId;
       if (channel !== CHANNEL_ID) {
         console.log(
@@ -52,7 +64,7 @@ export default {
     // log for `[cloud-relay-diag] llm_input` to see the assembled system
     // prompt and confirm the modality suffix is present. Remove once the
     // mode-aware feature is confirmed working.
-    api.on?.("llm_input", (event, ctx) => {
+    api.on("llm_input", (event, ctx) => {
       const channel = ctx.messageProvider || ctx.channelId;
       if (channel !== CHANNEL_ID) return;
       const sys = event.systemPrompt ?? "";
