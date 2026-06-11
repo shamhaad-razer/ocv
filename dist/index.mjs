@@ -639,14 +639,14 @@ var index_default = {
       const channel = ctx.messageProvider || ctx.channelId;
       if (channel !== CHANNEL_ID) {
         console.log(
-          `[cloud-relay] before_prompt_build: skip (channel=${channel ?? "?"}, not ${CHANNEL_ID}) \u2014 system prompt unchanged`
+          `[cloud-relay] before_prompt_build: skip (channel=${channel ?? "?"}, not ${CHANNEL_ID}) - system prompt unchanged`
         );
         return void 0;
       }
       const guidanceForLLM = getCurrentReplyGuidance() || "";
       if (!guidanceForLLM) {
         console.log(
-          `[cloud-relay] before_prompt_build: no guidance supplied for this turn (channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}) \u2014 system prompt unchanged`
+          `[cloud-relay] before_prompt_build: no guidance supplied for this turn (channel=${channel}, sessionKey=${ctx.sessionKey ?? "?"}) - system prompt unchanged`
         );
         return void 0;
       }
