@@ -84,43 +84,19 @@ export interface BeforePromptBuildResult {
   appendSystemContext?: string;
 }
 
-// Diagnostic-only: shape of the host's `llm_input` event so the plugin
-// can verify the assembled system prompt actually contains the
-// before_prompt_build appendSystemContext we returned.
-export interface LlmInputEvent {
-  runId: string;
-  sessionId: string;
-  provider: string;
-  model: string;
-  systemPrompt?: string;
-  prompt: string;
-  historyMessages: unknown[];
-  imagesCount: number;
-  tools?: unknown[];
-}
-
 export interface PluginApi {
   runtime?: { channel?: ChannelRuntime };
   registerChannel: (opts: { plugin: unknown }) => void;
-  // Typed hook registration. Optional because older hosts may not expose it.
-  on?: {
-    (
-      hookName: "before_prompt_build",
-      handler: (
-        event: BeforePromptBuildEvent,
-        ctx: BeforePromptBuildContext,
-      ) => BeforePromptBuildResult | undefined | Promise<BeforePromptBuildResult | undefined>,
-      opts?: { priority?: number; timeoutMs?: number },
-    ): void;
-    (
-      hookName: "llm_input",
-      handler: (
-        event: LlmInputEvent,
-        ctx: BeforePromptBuildContext,
-      ) => void | Promise<void>,
-      opts?: { priority?: number; timeoutMs?: number },
-    ): void;
-  };
+  // Typed hook registration. We only use "before_prompt_build"; the signature
+  // is intentionally narrow. Optional because older hosts may not expose it.
+  on?: (
+    hookName: "before_prompt_build",
+    handler: (
+      event: BeforePromptBuildEvent,
+      ctx: BeforePromptBuildContext,
+    ) => BeforePromptBuildResult | undefined | Promise<BeforePromptBuildResult | undefined>,
+    opts?: { priority?: number; timeoutMs?: number },
+  ) => void;
 }
 
 export type OutboundMediaContext = {
