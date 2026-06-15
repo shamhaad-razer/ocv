@@ -18,7 +18,7 @@ import type { ChannelRuntime, GatewayContext, Log, RelayState } from "../types.j
 // openclaw-contracts/README.md.)
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CONTRACTS_DIR = path.resolve(HERE, "../../../openclaw-contracts");
+const CONTRACTS_DIR = path.resolve(HERE, "../../../testing/openclaw-contracts");
 const HAS_CONTRACTS = existsSync(path.join(CONTRACTS_DIR, "index.json"));
 
 const requireFromHere = createRequire(import.meta.url);
