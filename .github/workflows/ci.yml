@@ -1,0 +1,41 @@
+# CI for the ocv (OpenClaw cloud-relay) plugin.
+#
+# ocv is hosted on GitHub and installed via `openclaw plugins install git:...`,
+# so — unlike service-openclaw / service-voice (Bitbucket + rai-cicd-engine) —
+# there is no shared pipeline to import and no Docker image / ECR push. This
+# workflow runs the Vitest suite (unit + contract), typechecks, and smoke-builds
+# the bundle so a broken commit can't be installed by a downstream user.
+#
+# Contract tests validate /api/respond bodies and decoded /api/poll bodies
+# against ../openclaw-contracts; they skip automatically when that sibling dir
+# isn't present in a single-repo checkout (see src/__tests__/contract.test.ts).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Typecheck · Unit · Contract · Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Unit + contract tests
+        run: npm test
+
+      - name: Build bundle (smoke)
+        run: npm run build
