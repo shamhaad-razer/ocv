@@ -336,3 +336,82 @@ export interface CommandBook {
   /** Onboarding gaps relevant to commands (missing test/deploy command, ambiguous, unvalidated). */
   gaps: KnownUnknown[];
 }
+
+// ----- Highlight-to-Explain (milestone, 06-highlight-to-explain.md) -----
+
+/** What a future UI sends: a repo + path + line range it highlighted. */
+export interface ExplainRequest {
+  /** Repo name (as in the index) the selection belongs to. */
+  repo: string;
+  /** Repo-relative file path. */
+  path: string;
+  /** 1-based inclusive line range of the selection. */
+  startLine: number;
+  endLine: number;
+  /** Optional: who's asking, so explanation depth can adapt (10-...md, G1r). */
+  experienceLevel?: "new-to-repo" | "junior" | "mid" | "senior";
+}
+
+/** A symbol detected near/at the selection (heuristic, not a real parser). */
+export interface SymbolHit {
+  name: string;
+  kind: "function" | "class" | "method" | "const" | "route" | "unknown";
+  /** "file:line" where it was matched. */
+  locator: string;
+  signature?: string;
+}
+
+/** A likely caller/callee found by static text search (heuristic — capped confidence). */
+export interface RefHit {
+  /** The symbol name referenced. */
+  name: string;
+  /** "file:line" of the reference. */
+  locator: string;
+  /** The matched line text, trimmed (evidence). */
+  snippet: string;
+}
+
+/** Related project-intelligence entities the selection touches. */
+export interface RelatedIntel {
+  routes: { method: string; pathPattern: string; locator: string }[];
+  scripts: { name: string; command: string }[];
+  envVars: string[];
+  services: string[];
+}
+
+/**
+ * The source-grounded explanation package returned for a highlighted selection
+ * (06-...md §1). Structured enough for a future frontend to render; carries
+ * confidence, freshness, known-unknowns, and a junior-friendly summary.
+ */
+export interface ExplainPackage {
+  request: ExplainRequest;
+  /** Junior-engineer-friendly prose summary of what the code appears to do. */
+  explanation: string;
+  /** The enclosing symbol if one was detected. */
+  enclosingSymbol: SymbolHit | null;
+  /** Other symbols detected within/near the selection. */
+  nearbySymbols: SymbolHit[];
+  /** Likely callers found by static search (heuristic). */
+  likelyCallers: RefHit[];
+  /** Likely callees referenced inside the selection (heuristic). */
+  likelyCallees: RefHit[];
+  related: RelatedIntel;
+  /** The raw selected lines (evidence; trimmed/capped). */
+  selectedCode: string;
+  /** Evidence: every file/symbol/scan fact this package rests on. */
+  evidence: {
+    sources: SourceRef[];
+    scanGeneratedAt: number;
+    scanVersion: string;
+    baseCommit: string | null;
+  };
+  confidence: Confidence;
+  freshness: FreshnessStatus;
+  /** Set when the index may be outdated relative to the working tree. */
+  staleWarning?: string;
+  knownUnknowns: KnownUnknown[];
+  /** Concrete next checks that would raise confidence (13-...md §7). */
+  suggestedFollowups: string[];
+  grounding: Grounding;
+}

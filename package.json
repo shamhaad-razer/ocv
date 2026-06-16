@@ -16,6 +16,7 @@
     "scan:diff": "node build-scan.mjs && node dist-scan/cli.mjs diff",
     "docs": "node build-scan.mjs && node dist-scan/cli.mjs docs",
     "env": "node build-scan.mjs && node dist-scan/cli.mjs env",
+    "explain": "node build-scan.mjs && node dist-scan/cli.mjs explain",
     "test": "vitest run"
   },
   "openclaw": {

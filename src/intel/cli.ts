@@ -28,11 +28,12 @@ import {
   renderRepoOnboarding,
 } from "./onboarding.js";
 import { detectMachineEnv } from "./env.js";
+import { explainSelection, listRepoFiles } from "./explain.js";
 import { renderMachineEnv } from "./render.js";
-import type { WorkspaceIntel } from "./types.js";
+import type { ExplainRequest, WorkspaceIntel } from "./types.js";
 
 interface Args {
-  cmd: "scan" | "check" | "diff" | "docs" | "env";
+  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain";
   root: string;
   out: string;
   repos?: string[];
@@ -40,12 +41,17 @@ interface Args {
   write: boolean;
   /** env: ports to probe (opt-in, requires the user to pass --check-ports). */
   checkPorts?: number[];
+  /** explain: positional target "<repo>/<path>:<startLine>-<endLine>". */
+  target?: string;
+  /** explain: experience level for the explanation lens. */
+  level?: ExplainRequest["experienceLevel"];
 }
 
 function parseArgs(argv: string[]): Args {
-  const cmd = (["check", "diff", "docs", "env"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
+  const cmd = (["check", "diff", "docs", "env", "explain"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
+  const positionals: string[] = [];
   const VALUELESS = new Set(["no-write"]);
   for (let i = 1; i < argv.length; i++) {
     if (argv[i].startsWith("--")) {
@@ -56,6 +62,8 @@ function parseArgs(argv: string[]): Args {
         flags.set(key, argv[i + 1] ?? "");
         i++;
       }
+    } else {
+      positionals.push(argv[i]);
     }
   }
   // Default workspace root = two levels up from src/intel (i.e. the repo's parent).
@@ -68,7 +76,17 @@ function parseArgs(argv: string[]): Args {
     ?.split(",")
     .map((s) => parseInt(s.trim(), 10))
     .filter((n) => Number.isFinite(n));
-  return { cmd, root, out, repos, write: !bools.has("no-write"), checkPorts };
+  const level = flags.get("level") as Args["level"] | undefined;
+  return { cmd, root, out, repos, write: !bools.has("no-write"), checkPorts, target: positionals[0], level };
+}
+
+/** Parse "<repo>/<path>:<startLine>-<endLine>" (or ":<line>") into an ExplainRequest. */
+function parseExplainTarget(target: string, level?: ExplainRequest["experienceLevel"]): ExplainRequest | null {
+  const m = /^([^/]+)\/(.+):(\d+)(?:-(\d+))?$/.exec(target);
+  if (!m) return null;
+  const startLine = parseInt(m[3], 10);
+  const endLine = m[4] ? parseInt(m[4], 10) : startLine;
+  return { repo: m[1], path: m[2], startLine, endLine, experienceLevel: level };
 }
 
 /** Detect candidate repos: immediate subdirs with a manifest or a .git dir. */
@@ -274,6 +292,37 @@ async function runEnv(args: Args, now: number): Promise<void> {
   }
 }
 
+/**
+ * Highlight-to-Explain: resolve a selection into a grounded explanation package
+ * and print it as JSON (a future UI consumes this; no UI here). Reads the last
+ * scan for index context + the working tree for the selected lines + caller search.
+ */
+function runExplain(args: Args, now: number): void {
+  if (!args.target) {
+    console.error('[explain] usage: explain "<repo>/<path>:<startLine>-<endLine>" [--level junior]');
+    process.exit(1);
+  }
+  const req = parseExplainTarget(args.target, args.level);
+  if (!req) {
+    console.error(`[explain] could not parse target "${args.target}" — expected "<repo>/<path>:<start>-<end>"`);
+    process.exit(1);
+  }
+  const jsonPath = join(args.out, "project-intel.json");
+  if (!existsSync(jsonPath)) {
+    console.error(`[explain] no scan at ${jsonPath} — run \`scan\` first`);
+    process.exit(1);
+  }
+  const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
+  const repo = ws.repos.find((r) => r.name === req.repo);
+  const repoFiles = repo ? listRepoFiles(repo.rootPath) : [];
+  const pkg = explainSelection(req, ws, { generatedAt: now, repoFiles });
+  // Print the structured package for a future frontend; stderr carries a 1-line summary.
+  console.error(
+    `[explain] ${req.repo}/${req.path}:${req.startLine}-${req.endLine} → confidence=${pkg.confidence}, freshness=${pkg.freshness}${pkg.staleWarning ? " (STALE)" : ""}`,
+  );
+  process.stdout.write(JSON.stringify(pkg, null, 2) + "\n");
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now(); // injected here at the edge ONLY
@@ -281,6 +330,7 @@ async function main(): Promise<void> {
   else if (args.cmd === "diff") runDiff(args);
   else if (args.cmd === "docs") runDocs(args);
   else if (args.cmd === "env") await runEnv(args, now);
+  else if (args.cmd === "explain") runExplain(args, now);
   else await runScan(args, now);
 }
 
