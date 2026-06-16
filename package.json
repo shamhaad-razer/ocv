@@ -10,6 +10,9 @@
   },
   "scripts": {
     "build": "node build.mjs",
+    "build:scan": "node build-scan.mjs",
+    "scan": "node build-scan.mjs && node dist-scan/cli.mjs scan",
+    "scan:check": "node build-scan.mjs && node dist-scan/cli.mjs check",
     "test": "vitest run"
   },
   "openclaw": {
