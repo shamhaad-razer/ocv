@@ -10,10 +10,15 @@
 // so it stays testable and host-independent. Git/repo-type detection is supplied
 // BY THE CALLER (the CLI already has detectRepos/readGitInfo) and passed in.
 
-import { createHash } from "node:crypto";
 import { constants, accessSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { hostStorageDir, projectIdFor } from "./storage.js";
+
+// Storage-path derivation now lives in storage.ts (the single source of truth);
+// re-export for back-compat with existing callers/tests.
+export { projectIdFor };
+export const storageDirFor = hostStorageDir;
 
 /** A registered external target project (host-side metadata only). */
 export interface TargetProject {
@@ -49,18 +54,6 @@ export interface Registry {
 /** The HOST registry file location. Never inside a target project. */
 export function registryPath(): string {
   return join(homedir(), ".openclaw-intel", "registry.json");
-}
-
-/** Stable per-target host storage dir (kept in sync with cli.ts defaultOutFor). */
-export function storageDirFor(targetPath: string): string {
-  const hash = createHash("sha256").update(targetPath).digest("hex").slice(0, 12);
-  const name = (targetPath.split("/").filter(Boolean).pop() || "target").replace(/[^A-Za-z0-9_-]/g, "_");
-  return join(homedir(), ".openclaw-intel", `${name}-${hash}`);
-}
-
-/** Stable project id = short hash of the absolute target path. */
-export function projectIdFor(targetPath: string): string {
-  return createHash("sha256").update(targetPath).digest("hex").slice(0, 12);
 }
 
 /** Load the registry, or an empty one if absent/corrupt. Read-only. */

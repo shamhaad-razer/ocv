@@ -19,9 +19,7 @@
 //   node dist-scan/cli.mjs explain "<repo>/<path>:<a>-<b>" --target <dir>
 //   node dist-scan/cli.mjs verify  --target <dir> [--run "<cmd>" --repo <r> --confirm]
 
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { hashFile, SCAN_VERSION } from "./grounding.js";
 import { scanRepo } from "./scanner.js";
@@ -39,6 +37,7 @@ import { explainSelection, listRepoFiles } from "./explain.js";
 import { buildChangeReport } from "./change.js";
 import { mergeVerificationStores, runVerification } from "./verify.js";
 import { renderMachineEnv, renderChangeReportMarkdown } from "./render.js";
+import { ProjectStorage, hostStorageDir } from "./storage.js";
 import {
   loadRegistry,
   recordScan,
@@ -56,8 +55,10 @@ interface Args {
   targetPath: string;
   /** Whether the user explicitly supplied --target/--root (vs the legacy default). */
   targetExplicit: boolean;
-  /** HOST storage dir for the index — NEVER inside the target project. */
+  /** Storage dir for the index — host-side by default, NEVER inside the target. */
   out: string;
+  /** Whether the user opted into project-local storage (<target>/.openclaw). */
+  local: boolean;
   repos?: string[];
   /** check: write invalidated freshness back to the artifact (default true). */
   write: boolean;
@@ -82,19 +83,12 @@ interface Args {
   desc?: string;
 }
 
-/** Stable per-target host storage dir under ~/.openclaw-intel/<name>-<hash>. */
-function defaultOutFor(targetPath: string): string {
-  const hash = createHash("sha256").update(targetPath).digest("hex").slice(0, 12);
-  const name = (targetPath.split("/").filter(Boolean).pop() || "target").replace(/[^A-Za-z0-9_-]/g, "_");
-  return join(homedir(), ".openclaw-intel", `${name}-${hash}`);
-}
-
 function parseArgs(argv: string[]): Args {
   const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const positionals: string[] = [];
-  const VALUELESS = new Set(["no-write", "confirm"]);
+  const VALUELESS = new Set(["no-write", "confirm", "local"]);
   for (let i = 1; i < argv.length; i++) {
     if (argv[i].startsWith("--")) {
       const key = argv[i].slice(2);
@@ -121,9 +115,13 @@ function parseArgs(argv: string[]): Args {
   // non-explicit so commands warn.
   const legacyDefault = resolve(process.cwd(), "..");
   const targetPath = resolve(targetFlag ?? legacyDefault);
-  // HOST storage: explicit --out wins; otherwise a host-side per-target dir.
-  // NEVER default to a path inside the target project (prompt-23 read-only policy).
-  const out = resolve(flags.get("out") ?? defaultOutFor(targetPath));
+  // STORAGE: explicit --out wins; else --local opts into <target>/.openclaw
+  // (modifies the target — only when the user asks); else host-side per-target dir.
+  // NEVER default to a path inside the target (prompt-23/27 read-only policy).
+  const local = bools.has("local");
+  const explicitOut = flags.get("out") ? resolve(flags.get("out") as string) : undefined;
+  const storage = ProjectStorage.for(targetPath, { local, explicitOut });
+  const out = storage.dir;
   const repos = flags.get("repos")?.split(",").map((s) => s.trim()).filter(Boolean);
   const checkPorts = flags
     .get("check-ports")
@@ -136,6 +134,7 @@ function parseArgs(argv: string[]): Args {
     targetPath,
     targetExplicit,
     out,
+    local,
     repos,
     write: !bools.has("no-write"),
     checkPorts,
@@ -229,7 +228,11 @@ async function runScan(args: Args, now: number): Promise<void> {
     console.error(`[scan] WARNING: no --target given; defaulting to \`${args.targetPath}\`. Pass --target <project-path> to study an external project.`);
   }
   console.error(`[scan] target project: ${args.targetPath}`);
-  console.error(`[scan] writing index to HOST storage: ${args.out} (target is NOT modified)`);
+  if (args.local) {
+    console.error(`[scan] --local: writing index INSIDE the target at ${args.out} (you opted in; this modifies the target)`);
+  } else {
+    console.error(`[scan] writing index to HOST storage: ${args.out} (target is NOT modified)`);
+  }
 
   const repoNames = args.repos ?? detectRepos(args.targetPath);
   if (repoNames.length === 0) {
@@ -502,10 +505,14 @@ function runReport(args: Args, now: number): void {
   const verification = loadVerificationStore(args.out);
   const report = buildChangeReport(ws, { generatedAt: now, verification });
 
+  // Write the "latest" report + append an immutable copy to per-target history.
+  const storage = new ProjectStorage(args.out, args.local);
+  const md = renderChangeReportMarkdown(report);
   const mdPath = join(args.out, "change-report.md");
   const reportJson = join(args.out, "change-report.json");
-  writeFileSync(mdPath, renderChangeReportMarkdown(report), "utf-8");
+  writeFileSync(mdPath, md, "utf-8");
   writeFileSync(reportJson, JSON.stringify(report, null, 2), "utf-8");
+  const hist = storage.appendReportHistory(now, report, md);
 
   for (const r of report.repos) {
     if (r.summary.total > 0) console.log(`[report] ${r.repo}: ${r.summary.total} changed file(s), ${r.recommendedCommands.length} recommended command(s)`);
@@ -513,6 +520,7 @@ function runReport(args: Args, now: number): void {
   if (verification) console.log(`[report] folded in ${verification.results.length} prior verification result(s)`);
   console.log(`[report] ${report.verdict}`);
   console.log(`[report] wrote ${mdPath} + ${reportJson}`);
+  console.log(`[report] appended to report history: ${hist.mdPath}`);
 }
 
 /**
