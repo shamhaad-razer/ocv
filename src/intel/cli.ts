@@ -39,10 +39,19 @@ import { explainSelection, listRepoFiles } from "./explain.js";
 import { buildChangeReport } from "./change.js";
 import { mergeVerificationStores, runVerification } from "./verify.js";
 import { renderMachineEnv, renderChangeReportMarkdown } from "./render.js";
-import type { ExplainRequest, VerificationStore, WorkspaceIntel } from "./types.js";
+import {
+  loadRegistry,
+  recordScan,
+  removeTarget,
+  resolveTarget,
+  saveRegistry,
+  upsertTarget,
+  validateTargetPath,
+} from "./registry.js";
+import type { ExplainRequest, KnownUnknown, VerificationStore, WorkspaceIntel } from "./types.js";
 
 interface Args {
-  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify";
+  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets";
   /** Resolved absolute path of the TARGET PROJECT being studied (read-only). */
   targetPath: string;
   /** Whether the user explicitly supplied --target/--root (vs the legacy default). */
@@ -64,6 +73,13 @@ interface Args {
   runRepo?: string;
   /** verify: explicit user confirmation to run confirm-required checks. */
   confirmed: boolean;
+  /** targets: subcommand (add|list|show|remove) — positional[0]. */
+  subcmd?: string;
+  /** targets: registry ref (id/name/path) — positional[1]. */
+  ref?: string;
+  /** targets add: display name + description. */
+  name?: string;
+  desc?: string;
 }
 
 /** Stable per-target host storage dir under ~/.openclaw-intel/<name>-<hash>. */
@@ -74,7 +90,7 @@ function defaultOutFor(targetPath: string): string {
 }
 
 function parseArgs(argv: string[]): Args {
-  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
+  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const positionals: string[] = [];
@@ -92,11 +108,17 @@ function parseArgs(argv: string[]): Args {
       positionals.push(argv[i]);
     }
   }
-  // TARGET PROJECT: --target (preferred) or --root (back-compat alias). Default
-  // (legacy) is the dir two levels up from this CLI = the OpenClaw workspace, but
-  // that's flagged non-explicit so commands can warn.
-  const targetFlag = flags.get("target") ?? flags.get("root");
+  // TARGET PROJECT: --target (preferred) or --root (back-compat alias). The value
+  // may be an absolute/relative PATH or a registered project ID/displayName — if
+  // it's not an existing path, try resolving it against the host registry.
+  let targetFlag = flags.get("target") ?? flags.get("root");
   const targetExplicit = targetFlag != null;
+  if (targetFlag && !existsSync(targetFlag)) {
+    const hit = resolveTarget(loadRegistry(), targetFlag);
+    if (hit) targetFlag = hit.targetPath;
+  }
+  // Default (legacy) is the dir two levels up = the OpenClaw workspace; flagged
+  // non-explicit so commands warn.
   const legacyDefault = resolve(process.cwd(), "..");
   const targetPath = resolve(targetFlag ?? legacyDefault);
   // HOST storage: explicit --out wins; otherwise a host-side per-target dir.
@@ -122,6 +144,10 @@ function parseArgs(argv: string[]): Args {
     run: flags.get("run") || undefined,
     runRepo: flags.get("repo") || undefined,
     confirmed: bools.has("confirm"),
+    subcmd: positionals[0],
+    ref: positionals[1],
+    name: flags.get("name") || undefined,
+    desc: flags.get("desc") || undefined,
   };
 }
 
@@ -258,6 +284,43 @@ async function runScan(args: Args, now: number): Promise<void> {
 
   // Generate onboarding docs + command book from the same grounded index.
   writeOnboardingDocs(ws, args.out);
+
+  // Auto-register / refresh this target in the HOST registry (never touches the
+  // target — only host metadata). Records repo type, commits, unknowns, time.
+  registerScannedTarget(args, ws, now);
+}
+
+/** Summarize a workspace's known-unknowns by impact for the registry entry. */
+function summarizeUnknowns(ws: WorkspaceIntel): { total: number; byImpact: { high: number; medium: number; low: number } } {
+  const all: KnownUnknown[] = [...ws.knownUnknowns, ...ws.repos.flatMap((r) => r.knownUnknowns)];
+  const byImpact = { high: 0, medium: 0, low: 0 };
+  for (const u of all) byImpact[u.confidenceImpact] += 1;
+  return { total: all.length, byImpact };
+}
+
+/** Upsert the target into the registry and record this scan. Host-only writes. */
+function registerScannedTarget(args: Args, ws: WorkspaceIntel, now: number): void {
+  const reg = loadRegistry();
+  const repoNames = ws.repos.map((r) => r.name);
+  const repoType: "single-repo" | "multi-repo" =
+    detectRepos(args.targetPath)[0] === "." ? "single-repo" : "multi-repo";
+  upsertTarget(reg, {
+    targetPath: args.targetPath,
+    repoType,
+    repos: repoNames,
+    now,
+    displayName: args.name,
+    description: args.desc,
+  });
+  recordScan(
+    reg,
+    args.targetPath,
+    now,
+    ws.repos.map((r) => ({ repo: r.name, commit: r.gitCommit })),
+    summarizeUnknowns(ws),
+  );
+  saveRegistry(reg);
+  console.log(`[scan] registered target in host registry (id derived from path)`);
 }
 
 /** Generate the onboarding artifacts (overview, per-repo, command book) into a docs/ subdir. */
@@ -491,6 +554,96 @@ async function runVerify(args: Args, now: number): Promise<void> {
   console.log(`[verify] wrote ${join(args.out, "verification.json")} (${merged.results.length} total result(s))`);
 }
 
+/**
+ * Manage the HOST target-project registry: add / list / show / remove.
+ * All operations are host-metadata only — they NEVER touch a target project.
+ *   targets add <path> [--name N] [--desc D]
+ *   targets list
+ *   targets show <id|name|path>
+ *   targets remove <id|name|path>     (untracks; does NOT delete the target)
+ */
+function runTargets(args: Args, now: number): void {
+  const sub = args.subcmd ?? "list";
+  const reg = loadRegistry();
+
+  if (sub === "add") {
+    const raw = args.ref;
+    if (!raw) {
+      console.error("[targets] usage: targets add <path> [--name <name>] [--desc <description>]");
+      process.exit(1);
+    }
+    const targetPath = resolve(raw);
+    const err = validateTargetPath(targetPath);
+    if (err) {
+      console.error(`[targets] ${err}`);
+      process.exit(1);
+    }
+    const repos = detectRepos(targetPath);
+    if (repos.length === 0) {
+      console.error(`[targets] no repos detected under ${targetPath} (not a repo or multi-repo workspace)`);
+      process.exit(1);
+    }
+    const repoType: "single-repo" | "multi-repo" = repos[0] === "." ? "single-repo" : "multi-repo";
+    const repoNames = repos[0] === "." ? [targetPath.split("/").filter(Boolean).pop() || "."] : repos;
+    const entry = upsertTarget(reg, { targetPath, repoType, repos: repoNames, now, displayName: args.name, description: args.desc });
+    saveRegistry(reg);
+    console.log(`[targets] registered: ${entry.displayName} (id ${entry.id})`);
+    console.log(`[targets]   path: ${entry.targetPath} · type: ${entry.repoType} · repos: ${entry.repos.join(", ")}`);
+    console.log(`[targets]   storage: ${entry.storageDir} (host — target not modified)`);
+    console.log(`[targets]   not scanned yet — run: scan --target ${entry.id}`);
+    return;
+  }
+
+  if (sub === "list") {
+    if (reg.projects.length === 0) {
+      console.log("[targets] no registered projects. Add one: targets add <path>");
+      return;
+    }
+    console.log(`[targets] ${reg.projects.length} registered project(s):`);
+    for (const p of reg.projects) {
+      const scanned = p.lastScannedAt ? new Date(p.lastScannedAt).toISOString() : "never";
+      const ku = p.knownUnknownsSummary ? `${p.knownUnknownsSummary.total} unknowns` : "—";
+      console.log(`  ${p.id}  ${p.displayName}  [${p.repoType}]  scanned:${scanned}  ${ku}`);
+      console.log(`        ${p.targetPath}`);
+    }
+    return;
+  }
+
+  if (sub === "show") {
+    if (!args.ref) {
+      console.error("[targets] usage: targets show <id|name|path>");
+      process.exit(1);
+    }
+    const p = resolveTarget(reg, args.ref);
+    if (!p) {
+      console.error(`[targets] not found: ${args.ref}`);
+      process.exit(1);
+    }
+    console.log(JSON.stringify(p, null, 2));
+    return;
+  }
+
+  if (sub === "remove") {
+    if (!args.ref) {
+      console.error("[targets] usage: targets remove <id|name|path>");
+      process.exit(1);
+    }
+    const removed = removeTarget(reg, args.ref);
+    if (!removed) {
+      console.error(`[targets] not found: ${args.ref}`);
+      process.exit(1);
+    }
+    saveRegistry(reg);
+    console.log(`[targets] untracked: ${removed.displayName} (${removed.targetPath})`);
+    console.log(`[targets] the target project was NOT deleted or modified — only removed from OpenClaw tracking.`);
+    console.log(`[targets] (its host index at ${removed.storageDir} is left in place; delete it manually if you want.)`);
+    return;
+  }
+
+  console.error(`[targets] unknown subcommand: ${sub} — use add | list | show | remove`);
+  process.exit(1);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now(); // injected here at the edge ONLY
@@ -501,6 +654,7 @@ async function main(): Promise<void> {
   else if (args.cmd === "explain") runExplain(args, now);
   else if (args.cmd === "report") runReport(args, now);
   else if (args.cmd === "verify") await runVerify(args, now);
+  else if (args.cmd === "targets") runTargets(args, now);
   else await runScan(args, now);
 }
 
