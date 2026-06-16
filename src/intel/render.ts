@@ -10,6 +10,7 @@ import type {
   FreshnessStatus,
   Grounding,
   KnownUnknown,
+  MachineEnv,
   RepoIntel,
   WorkspaceDiff,
   WorkspaceIntel,
@@ -185,6 +186,11 @@ export function renderWorkspaceMarkdown(ws: WorkspaceIntel): string {
   }
   lines.push("");
 
+  if (ws.machineEnv) {
+    lines.push(renderMachineEnv(ws.machineEnv));
+    lines.push("");
+  }
+
   if (ws.knownUnknowns.length) {
     lines.push("## Workspace-level known unknowns");
     lines.push(renderUnknowns(ws.knownUnknowns));
@@ -203,6 +209,30 @@ export function renderWorkspaceMarkdown(ws: WorkspaceIntel): string {
   lines.push("- Run `npm run scan:diff` to compare the previous scan with a fresh one.");
   lines.push("- Freshness is anchored to each repo's commit + per-file content hashes recorded in the JSON output.");
   lines.push("");
+  return lines.join("\n");
+}
+
+/** Render the local machine environment (milestone 4) — detected vs missing vs unchecked. */
+export function renderMachineEnv(env: MachineEnv): string {
+  const lines: string[] = [];
+  lines.push("## Local machine environment");
+  lines.push(`- OS: \`${env.os}\`${env.isWSL ? " (WSL)" : ""} · arch: \`${env.arch}\` · shell: \`${env.shell ?? "unknown"}\` — ${freshBadge(env.grounding.status)}, ${env.grounding.verification === "runtime-verified" ? "runtime-verified ✓" : env.grounding.verification}`);
+  lines.push("");
+  lines.push("### Detected tools (runtime-verified)");
+  lines.push("| tool | available | version | probe |");
+  lines.push("|---|---|---|---|");
+  for (const t of env.tools) {
+    lines.push(`| \`${t.name}\` | ${t.available ? "✓" : "✗"} | ${t.version ?? "—"} | \`${t.probe}\` |`);
+  }
+  lines.push("");
+  if (env.ports.length) {
+    lines.push("### Port checks (opt-in, confirmed)");
+    for (const p of env.ports) lines.push(`- port \`${p.port}\`: **${p.state}**`);
+    lines.push("");
+  } else {
+    lines.push("_Ports not checked (opt-in via `env --check-ports`)._");
+    lines.push("");
+  }
   return lines.join("\n");
 }
 

@@ -23,6 +23,7 @@ import type {
   RepoIntel,
   WorkspaceIntel,
 } from "./types.js";
+import { deriveSetupCompatibility } from "./env.js";
 
 // ---------- badges (shared style with render.ts) ----------
 
@@ -289,6 +290,27 @@ export function renderOverview(ws: WorkspaceIntel): string {
   lines.push("- **Cross-repo runtime/contract wiring is not yet derived** by this MVP — it is");
   lines.push("  tracked as a workspace known-unknown below and planned for a later milestone.");
   lines.push("");
+
+  // Setup compatibility against the detected machine (milestone 4).
+  if (ws.machineEnv) {
+    const env = ws.machineEnv;
+    lines.push("## Setup compatibility (this machine)");
+    lines.push(`- machine: \`${env.os}\`${env.isWSL ? " (WSL)" : ""}, shell \`${env.shell ?? "?"}\`. Tools present: ${env.tools.filter((t) => t.available).map((t) => `\`${t.name}\``).join(", ") || "none detected"}.`);
+    const compat = deriveSetupCompatibility(ws);
+    for (const c of compat) {
+      if (c.toolsMissing.length === 0 && c.notes.length === 0) {
+        lines.push(`- \`${c.repo}\`: needed tools present (${c.toolsPresent.map((t) => `\`${t}\``).join(", ") || "no tool-specific commands"}).`);
+      } else {
+        lines.push(`- \`${c.repo}\`: ${c.toolsMissing.length ? `**missing ${c.toolsMissing.map((t) => `\`${t}\``).join(", ")}**` : "tools present"}.`);
+        for (const n of c.notes) lines.push(`  - ${n}`);
+      }
+    }
+    lines.push("");
+  } else {
+    lines.push("## Setup compatibility (this machine)");
+    lines.push("_Machine environment not detected — run `npm run scan` (auto-detects) or `npm run env`._");
+    lines.push("");
+  }
 
   lines.push("## Workspace known unknowns");
   const allGaps = [...ws.knownUnknowns];

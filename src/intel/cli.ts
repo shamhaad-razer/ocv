@@ -27,19 +27,23 @@ import {
   renderOverview,
   renderRepoOnboarding,
 } from "./onboarding.js";
+import { detectMachineEnv } from "./env.js";
+import { renderMachineEnv } from "./render.js";
 import type { WorkspaceIntel } from "./types.js";
 
 interface Args {
-  cmd: "scan" | "check" | "diff" | "docs";
+  cmd: "scan" | "check" | "diff" | "docs" | "env";
   root: string;
   out: string;
   repos?: string[];
   /** check: write invalidated freshness back to the artifact (default true). */
   write: boolean;
+  /** env: ports to probe (opt-in, requires the user to pass --check-ports). */
+  checkPorts?: number[];
 }
 
 function parseArgs(argv: string[]): Args {
-  const cmd = (["check", "diff", "docs"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
+  const cmd = (["check", "diff", "docs", "env"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const VALUELESS = new Set(["no-write"]);
@@ -59,7 +63,12 @@ function parseArgs(argv: string[]): Args {
   const root = resolve(flags.get("root") ?? defaultRoot);
   const out = resolve(flags.get("out") ?? join(root, ".openclaw"));
   const repos = flags.get("repos")?.split(",").map((s) => s.trim()).filter(Boolean);
-  return { cmd, root, out, repos, write: !bools.has("no-write") };
+  const checkPorts = flags
+    .get("check-ports")
+    ?.split(",")
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => Number.isFinite(n));
+  return { cmd, root, out, repos, write: !bools.has("no-write"), checkPorts };
 }
 
 /** Detect candidate repos: immediate subdirs with a manifest or a .git dir. */
@@ -89,7 +98,7 @@ function detectRepos(root: string): string[] {
   return out.sort();
 }
 
-function runScan(args: Args, now: number): void {
+async function runScan(args: Args, now: number): Promise<void> {
   const repoNames = args.repos ?? detectRepos(args.root);
   if (repoNames.length === 0) {
     console.error(`[scan] no repos found under ${args.root}`);
@@ -97,11 +106,16 @@ function runScan(args: Args, now: number): void {
   }
   const repos = repoNames.map((name) => scanRepo(join(args.root, name), { generatedAt: now }));
 
+  // Safe local environment detection (read-only probes only; ports NOT checked
+  // during scan — that's opt-in via `env --check-ports`).
+  const { env, unknowns: envUnknowns } = await detectMachineEnv({ generatedAt: now });
+
   const ws: WorkspaceIntel = {
     rootPath: args.root,
     scanVersion: SCAN_VERSION,
     generatedAt: now,
     repos,
+    machineEnv: env,
     knownUnknowns: [
       {
         id: "workspace:cross-repo-edges",
@@ -113,6 +127,7 @@ function runScan(args: Args, now: number): void {
         status: "open",
         confidenceImpact: "medium",
       },
+      ...envUnknowns,
     ],
   };
 
@@ -230,13 +245,43 @@ function runDocs(args: Args): void {
   writeOnboardingDocs(ws, args.out);
 }
 
-function main(): void {
+/**
+ * Detect the local machine environment and merge it into the last scan (so
+ * onboarding docs gain setup-compatibility notes). Safe probes always run; port
+ * checks run ONLY when --check-ports is passed (explicit user confirmation).
+ */
+async function runEnv(args: Args, now: number): Promise<void> {
+  if (args.checkPorts && args.checkPorts.length) {
+    console.log(`[env] --check-ports given: probing ports ${args.checkPorts.join(", ")} (local bind test, no network egress)`);
+  }
+  const { env, unknowns } = await detectMachineEnv({ generatedAt: now, checkPorts: args.checkPorts });
+  console.log(renderMachineEnv(env));
+
+  // If a prior scan exists, merge the env into it + regenerate docs so the
+  // command book/overview pick up setup compatibility.
+  const jsonPath = join(args.out, "project-intel.json");
+  if (existsSync(jsonPath)) {
+    const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
+    ws.machineEnv = env;
+    // refresh the env-related workspace unknowns
+    ws.knownUnknowns = ws.knownUnknowns.filter((u) => u.kind !== "missing-tool" && u.kind !== "unverified-port").concat(unknowns);
+    writeFileSync(jsonPath, JSON.stringify(ws, null, 2), "utf-8");
+    writeFileSync(join(args.out, "project-map.md"), renderWorkspaceMarkdown(ws), "utf-8");
+    writeOnboardingDocs(ws, args.out);
+    console.log(`[env] merged environment into ${jsonPath} + regenerated docs`);
+  } else {
+    console.log(`[env] no prior scan to merge into — run \`scan\` to persist environment + compatibility`);
+  }
+}
+
+async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now(); // injected here at the edge ONLY
   if (args.cmd === "check") runCheck(args);
   else if (args.cmd === "diff") runDiff(args);
   else if (args.cmd === "docs") runDocs(args);
-  else runScan(args, now);
+  else if (args.cmd === "env") await runEnv(args, now);
+  else await runScan(args, now);
 }
 
 main();

@@ -16,6 +16,7 @@ import type {
   FreshnessStatus,
   Grounding,
   SourceRef,
+  Verification,
 } from "./types.js";
 
 /** Bump this to invalidate all previously-derived intelligence (derive-level stale). */
@@ -106,6 +107,12 @@ export interface BuildGroundingInput {
   knownUnknownIds?: string[];
   /** Initial status; defaults to "fresh" for a just-completed scan. */
   status?: FreshnessStatus;
+  /**
+   * Verification level. Defaults to "static". A safe read-only probe that
+   * actually ran (e.g. `node --version`) is "runtime-verified" — the only path
+   * to high confidence for an inferred/heuristic fact (§5, §7).
+   */
+  verification?: Verification;
 }
 
 /** Assemble a complete Grounding block + computed confidence in one place. */
@@ -114,11 +121,13 @@ export function buildGrounding(input: BuildGroundingInput): Grounding {
     .filter((s) => s.hash && (s.kind === "file" || s.kind === "dir"))
     .map((s) => ({ ref: s.ref, hash: s.hash as string }));
 
+  const verification: Verification = input.verification ?? "static";
   const basis: ConfidenceBasis = {
     sourceCoverage: input.sources.length > 0 ? "complete" : "none",
     freshness: input.status ?? "fresh",
     analysisQuality: input.analysisQuality,
-    runtimeVerification: "none",
+    // A runtime-verified probe feeds the calculus so an inferred fact can reach high.
+    runtimeVerification: verification === "runtime-verified" ? "verified" : verification === "runtime-failed" ? "failed" : "none",
     missingFiles: [],
     ...input.basisOverrides,
   };
@@ -132,7 +141,7 @@ export function buildGrounding(input: BuildGroundingInput): Grounding {
     status: input.status ?? "fresh",
     confidence: computeConfidence(basis),
     confidenceBasis: basis,
-    verification: "static",
+    verification,
     knownUnknownIds: input.knownUnknownIds ?? [],
   };
 }

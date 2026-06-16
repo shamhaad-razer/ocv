@@ -136,6 +136,9 @@ export interface KnownUnknown {
     | "ambiguous-command"
     | "missing-test-command"
     | "missing-deploy-command"
+    // local-environment gaps (milestone 4 — env awareness):
+    | "missing-tool"
+    | "unverified-port"
     | "other";
   title: string;
   detail: string;
@@ -195,6 +198,61 @@ export interface WorkspaceIntel {
   repos: RepoIntel[];
   /** Cross-repo edges are out of MVP scope; tracked as a known-unknown instead. */
   knownUnknowns: KnownUnknown[];
+  /** Local machine environment (milestone 4). Optional: absent if not detected. */
+  machineEnv?: MachineEnv;
+}
+
+// ----- Local environment awareness (milestone 4, 07-...md §2) -----
+
+/** Result of probing for one tool/runtime. A detected tool is runtime-verified. */
+export interface ToolCheck {
+  name: string;
+  available: boolean;
+  /** Version string if the probe returned one (e.g. "v24.15.0"). */
+  version?: string;
+  /** The exact (read-only) command run to detect it — provenance. */
+  probe: string;
+  grounding: Grounding;
+}
+
+/**
+ * The user's local machine environment, detected via SAFE read-only probes only
+ * (07-...md §2). Separates detected facts (tools[]) from inferred facts (os/shell)
+ * and from things that need confirmation (ports). Never installs anything.
+ */
+export interface MachineEnv {
+  os: string; // "linux" | "darwin" | "win32"
+  /** True if running under WSL (detected from the kernel string). */
+  isWSL: boolean;
+  shell: string | null;
+  arch: string;
+  tools: ToolCheck[];
+  /** Port checks only run when explicitly confirmed; empty otherwise. */
+  ports: PortCheck[];
+  /** Grounding for the environment snapshot as a whole. */
+  grounding: Grounding;
+}
+
+/** A port availability check (opt-in, requires confirmation — may touch the network). */
+export interface PortCheck {
+  port: number;
+  /** "occupied" = something is listening; "free" = nothing; "unknown" = couldn't tell. */
+  state: "occupied" | "free" | "unknown";
+  grounding: Grounding;
+}
+
+/**
+ * Setup compatibility for one repo, derived by intersecting the commands the repo
+ * needs against the tools the machine actually has. Drives "don't suggest a
+ * command whose tool is missing" (07-...md §2).
+ */
+export interface SetupCompatibility {
+  repo: string;
+  /** Tools the repo's commands reference that are present on this machine. */
+  toolsPresent: string[];
+  /** Tools referenced but NOT found — commands needing these are flagged. */
+  toolsMissing: string[];
+  notes: string[];
 }
 
 // ----- Scan-to-scan comparison (requirement 8) -----
