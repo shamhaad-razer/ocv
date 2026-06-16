@@ -84,4 +84,34 @@ describe("CLI host-vs-target separation", () => {
       rmSync(fakeHome, { recursive: true, force: true });
     }
   });
+
+  // Regression (prompt 25): a SINGLE-REPO target — the target path IS the repo,
+  // not a parent of repos. Previously "no repos found"; now detected as ".".
+  it("scans a single-repo target (target path itself is the repo)", () => {
+    const single = mkdtempSync(join(tmpdir(), "single-repo-"));
+    const singleOut = mkdtempSync(join(tmpdir(), "single-out-"));
+    try {
+      mkdirSync(join(single, "src"), { recursive: true });
+      writeFileSync(join(single, "package.json"), JSON.stringify({ name: "solo", scripts: { test: "vitest run" } }));
+      writeFileSync(join(single, "src", "a.ts"), "export function h() { return k(); }\n");
+
+      const scan = run(["scan", "--target", single, "--out", singleOut]);
+      expect(scan.code).toBe(0);
+      const ws = JSON.parse(readFileSync(join(singleOut, "project-intel.json"), "utf-8"));
+      expect(ws.repos).toHaveLength(1);
+      // repo name is the target's basename, rootPath is the target itself
+      expect(ws.repos[0].rootPath).toBe(single);
+
+      const repoName = ws.repos[0].name;
+      const ex = run(["explain", `${repoName}/src/a.ts:1-1`, "--target", single, "--out", singleOut]);
+      expect(ex.code).toBe(0);
+      expect(JSON.parse(ex.stdout).enclosingSymbol?.name).toBe("h");
+
+      // target untouched
+      expect(readdirSync(single).some((n) => n.startsWith(".openclaw"))).toBe(false);
+    } finally {
+      rmSync(single, { recursive: true, force: true });
+      rmSync(singleOut, { recursive: true, force: true });
+    }
+  });
 });

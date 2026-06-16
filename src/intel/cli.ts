@@ -149,8 +149,30 @@ function parseExplainTarget(target: string, level?: ExplainRequest["experienceLe
   return { repo: m[1], path: m[2], startLine, endLine, experienceLevel: level };
 }
 
-/** Detect candidate repos: immediate subdirs with a manifest or a .git dir. */
+/** Manifest/marker files that make a directory "look like a repo". */
+function looksLikeRepo(dir: string): boolean {
+  return (
+    existsSync(join(dir, ".git")) ||
+    existsSync(join(dir, "package.json")) ||
+    existsSync(join(dir, "pyproject.toml")) ||
+    existsSync(join(dir, "go.mod")) ||
+    existsSync(join(dir, "Cargo.toml")) ||
+    existsSync(join(dir, "requirements.txt"))
+  );
+}
+
+/**
+ * Detect candidate repos under a target.
+ * Returns repo-relative paths: "." when the TARGET ITSELF is a repo (the common
+ * single-repo external-target case), else the immediate subdirs that look like
+ * repos (a multi-repo workspace). This is what lets OpenClaw be pointed at either
+ * shape of external project.
+ */
 function detectRepos(root: string): string[] {
+  // Single-repo target: the target path itself is a repo.
+  if (looksLikeRepo(root)) return ["."];
+
+  // Multi-repo workspace: immediate subdirs that look like repos.
   const out: string[] = [];
   let entries: string[];
   try {
@@ -166,12 +188,7 @@ function detectRepos(root: string): string[] {
     } catch {
       continue;
     }
-    const looksLikeRepo =
-      existsSync(join(abs, ".git")) ||
-      existsSync(join(abs, "package.json")) ||
-      existsSync(join(abs, "pyproject.toml")) ||
-      existsSync(join(abs, "go.mod"));
-    if (looksLikeRepo) out.push(name);
+    if (looksLikeRepo(abs)) out.push(name);
   }
   return out.sort();
 }
