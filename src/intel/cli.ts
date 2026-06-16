@@ -21,10 +21,16 @@ import { scanRepo } from "./scanner.js";
 import { renderWorkspaceMarkdown, renderDiffMarkdown } from "./render.js";
 import { compareWorkspaces, hasChanges } from "./compare.js";
 import { invalidateWorkspace } from "./invalidate.js";
+import {
+  buildCommandBook,
+  renderCommandBookMarkdown,
+  renderOverview,
+  renderRepoOnboarding,
+} from "./onboarding.js";
 import type { WorkspaceIntel } from "./types.js";
 
 interface Args {
-  cmd: "scan" | "check" | "diff";
+  cmd: "scan" | "check" | "diff" | "docs";
   root: string;
   out: string;
   repos?: string[];
@@ -33,7 +39,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const cmd = (["check", "diff"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
+  const cmd = (["check", "diff", "docs"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const VALUELESS = new Set(["no-write"]);
@@ -127,6 +133,25 @@ function runScan(args: Args, now: number): void {
   console.log(`[scan] scanned ${repos.length} repo(s); ${totalUnknowns} known-unknown(s) recorded`);
   console.log(`[scan] wrote ${jsonPath}`);
   console.log(`[scan] wrote ${mdPath}`);
+
+  // Generate onboarding docs + command book from the same grounded index.
+  writeOnboardingDocs(ws, args.out);
+}
+
+/** Generate the onboarding artifacts (overview, per-repo, command book) into a docs/ subdir. */
+function writeOnboardingDocs(ws: WorkspaceIntel, out: string): void {
+  const docsDir = join(out, "docs");
+  mkdirSync(docsDir, { recursive: true });
+
+  writeFileSync(join(docsDir, "onboarding-overview.md"), renderOverview(ws), "utf-8");
+  for (const repo of ws.repos) {
+    writeFileSync(join(docsDir, `onboarding-${repo.name}.md`), renderRepoOnboarding(repo), "utf-8");
+  }
+  const book = buildCommandBook(ws);
+  writeFileSync(join(docsDir, "command-book.md"), renderCommandBookMarkdown(book), "utf-8");
+  writeFileSync(join(docsDir, "command-book.json"), JSON.stringify(book, null, 2), "utf-8");
+
+  console.log(`[docs] wrote ${ws.repos.length + 2} onboarding doc(s) + command book to ${docsDir}`);
 }
 
 function runCheck(args: Args): void {
@@ -194,11 +219,23 @@ function runDiff(args: Args): void {
   console.log(`[diff] ${changed ? "changes detected" : "no changes"}; wrote ${mdPath}`);
 }
 
+/** Regenerate onboarding docs from the LAST scan without re-scanning the repos. */
+function runDocs(args: Args): void {
+  const jsonPath = join(args.out, "project-intel.json");
+  if (!existsSync(jsonPath)) {
+    console.error(`[docs] no scan at ${jsonPath} — run \`scan\` first`);
+    process.exit(1);
+  }
+  const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
+  writeOnboardingDocs(ws, args.out);
+}
+
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now(); // injected here at the edge ONLY
   if (args.cmd === "check") runCheck(args);
   else if (args.cmd === "diff") runDiff(args);
+  else if (args.cmd === "docs") runDocs(args);
   else runScan(args, now);
 }
 

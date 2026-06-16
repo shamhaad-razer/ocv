@@ -348,6 +348,22 @@ export function scanRepo(repoRoot: string, opts: ScanOptions): RepoIntel {
     .filter((f) => PACKAGE_FILE_NAMES.has(f.split("/").pop() as string))
     .map((f) => ({ value: f, grounding: ground([fileSource(repoRoot, f)], "declared") }));
 
+  // --- doc files (README + docs/) for "what is this repo?" ---
+  const docFiles: Finding<string>[] = files
+    .filter((f) => /(^|\/)readme(\.md|\.txt|\.rst)?$/i.test(f) || /(^|\/)docs\//.test(f))
+    .map((f) => ({ value: f, grounding: ground([fileSource(repoRoot, f)], "declared") }));
+  const hasReadme = docFiles.some((d) => /(^|\/)readme/i.test(d.value));
+  if (!hasReadme) {
+    addUnknown({
+      kind: "missing-readme",
+      title: "no README found",
+      detail: "No README at scan time; the repo's purpose can't be grounded in prose and must be inferred from structure.",
+      evidence: [],
+      status: "open",
+      confidenceImpact: "medium",
+    });
+  }
+
   // --- scripts/commands ---
   const scripts: Finding<DetectedScript>[] = [];
   for (const f of files) {
@@ -378,6 +394,17 @@ export function scanRepo(repoRoot: string, opts: ScanOptions): RepoIntel {
       confidenceImpact: "low",
     });
   }
+  // Onboarding gaps: a missing test command is a real obstacle for a new engineer.
+  if (!scripts.some((s) => s.value.category === "test")) {
+    addUnknown({
+      kind: "missing-test-command",
+      title: "no test command detected",
+      detail: "No declared script categorized as `test`. How to test this repo is unknown from manifests (may live in CI or docs).",
+      evidence: [],
+      status: "open",
+      confidenceImpact: "medium",
+    });
+  }
 
   // --- env files + var names ---
   const envFiles: Finding<string>[] = files
@@ -394,6 +421,20 @@ export function scanRepo(repoRoot: string, opts: ScanOptions): RepoIntel {
         grounding: ground([{ kind: "file", ref: ef.value, locator: varName, hash: hashFile(join(repoRoot, ef.value)) ?? undefined }], "declared"),
       });
     }
+  }
+  // Onboarding gap: a real .env exists but no committed .example/.template to
+  // tell a new engineer which vars to set (and we never read the real values, S6).
+  const hasRealEnv = envFiles.some((e) => /(^|\/)\.env$/.test(e.value));
+  const hasEnvExample = envFiles.some((e) => /\.(example|template)$/.test(e.value));
+  if (hasRealEnv && !hasEnvExample) {
+    addUnknown({
+      kind: "missing-env-example",
+      title: "no committed env example",
+      detail: "A .env exists but no .env.example/.template — required env vars can't be listed for onboarding (values are never read, S6).",
+      evidence: envFiles.filter((e) => /(^|\/)\.env$/.test(e.value)).map((e) => ({ kind: "file" as const, ref: e.value })),
+      status: "open",
+      confidenceImpact: "medium",
+    });
   }
 
   // --- docker / deployment files ---
@@ -470,6 +511,7 @@ export function scanRepo(repoRoot: string, opts: ScanOptions): RepoIntel {
     coverage,
     importantDirs,
     packageFiles,
+    docFiles,
     scripts,
     services,
     routes,

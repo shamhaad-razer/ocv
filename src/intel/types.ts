@@ -130,6 +130,12 @@ export interface KnownUnknown {
     | "external-service-behavior"
     | "shallow-graph"
     | "missing-tests"
+    // onboarding-doc gaps (milestone 3):
+    | "missing-readme"
+    | "missing-env-example"
+    | "ambiguous-command"
+    | "missing-test-command"
+    | "missing-deploy-command"
     | "other";
   title: string;
   detail: string;
@@ -168,6 +174,8 @@ export interface RepoIntel {
   coverage: ScanCoverage;
   importantDirs: Finding<string>[];
   packageFiles: Finding<string>[];
+  /** README / docs files found (for "what is this repo?"). */
+  docFiles: Finding<string>[];
   scripts: Finding<DetectedScript>[];
   services: Finding<DetectedService>[];
   routes: Finding<DetectedRoute>[];
@@ -224,4 +232,49 @@ export interface WorkspaceDiff {
   reposAdded: string[];
   reposRemoved: string[];
   repoDiffs: RepoDiff[];
+}
+
+// ----- Command book (milestone 3, 07-command-and-setup-assistant.md) -----
+
+/** The categories the command book groups by (07-...md §0). */
+export type CommandCategory =
+  | "install"
+  | "dev"
+  | "build"
+  | "test"
+  | "lint"
+  | "deploy"
+  | "docker"
+  | "database"
+  | "uncategorized";
+
+/**
+ * One command book entry — a runnable command + full provenance. Every field the
+ * milestone requires (text, source file+line/section, repo, confidence,
+ * freshness, runtime-verified) is present and derived from a grounded finding.
+ */
+export interface CommandBookEntry {
+  repo: string;
+  category: CommandCategory;
+  /** The command to run. */
+  command: string;
+  name: string;
+  /** Source file the command was declared in. */
+  sourceFile: string;
+  /** Finer source locator (e.g. "package.json:scripts.test" or "Makefile:42"). */
+  sourceLocator?: string;
+  confidence: Confidence;
+  freshness: FreshnessStatus;
+  /** Whether this command has been executed/verified (always false in this MVP). */
+  runtimeVerified: boolean;
+  verification: Verification;
+}
+
+/** The full command book across all repos, grouped + with the gaps it knows about. */
+export interface CommandBook {
+  generatedAt: number;
+  scanVersion: string;
+  entries: CommandBookEntry[];
+  /** Onboarding gaps relevant to commands (missing test/deploy command, ambiguous, unvalidated). */
+  gaps: KnownUnknown[];
 }
