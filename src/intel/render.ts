@@ -5,13 +5,16 @@
 // known-unknowns are first-class, not footnotes.
 
 import type {
+  ChangeConfidenceReport,
   Confidence,
   Finding,
   FreshnessStatus,
   Grounding,
   KnownUnknown,
   MachineEnv,
+  RepoChangeReport,
   RepoIntel,
+  VerificationStore,
   WorkspaceDiff,
   WorkspaceIntel,
 } from "./types.js";
@@ -276,6 +279,118 @@ export function renderDiffMarkdown(diff: WorkspaceDiff): string {
 
   if (!diff.repoDiffs.some((r) => r.deltas.length || r.unknownsOpened.length || r.unknownsResolved.length || r.commitBefore !== r.commitAfter) && !diff.reposAdded.length && !diff.reposRemoved.length) {
     lines.push("_No changes detected between scans._");
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+// ---------- Change Confidence Report (08-...md) ----------
+
+function bullets(items: string[], empty = "_none_"): string {
+  return items.length ? items.map((i) => `- ${i}`).join("\n") : empty;
+}
+
+function renderRepoChange(r: RepoChangeReport): string {
+  const lines: string[] = [];
+  lines.push(`## \`${r.repo}\``);
+  if (!r.isGitRepo) {
+    lines.push("_not a git repository — changes can't be determined_");
+    lines.push("");
+    return lines.join("\n");
+  }
+  lines.push(`- branch: \`${r.branch ?? "?"}\` · head: \`${r.headCommit ?? "?"}\` · changed files: ${r.summary.total}`);
+  if (r.summary.total === 0) {
+    lines.push("- _no working-tree changes_");
+    lines.push("");
+    return lines.join("\n");
+  }
+  lines.push(`- breakdown: ${r.summary.code} code · ${r.summary.config} config · ${r.summary.test} test · ${r.summary.deploy} deploy · ${r.summary.docs} docs · ${r.summary.other} other`);
+  lines.push("");
+
+  lines.push("### Changed files → affected entities");
+  lines.push("| file | change | +/- | affected entities |");
+  lines.push("|---|---|---|---|");
+  for (const f of r.changedFiles) {
+    const ent = f.affectedEntities.length
+      ? f.affectedEntities.map((e) => `${e.kind}:${e.label} (${confBadge(e.confidence)})`).join("; ")
+      : f.indexed ? "—" : "_not indexed_";
+    const counts = f.added != null || f.deleted != null ? `+${f.added ?? 0}/-${f.deleted ?? 0}` : "—";
+    lines.push(`| \`${f.path}\` | ${f.changeKind} | ${counts} | ${ent} |`);
+  }
+  lines.push("");
+
+  lines.push("### Recommended commands (NOT run — recommend only)");
+  if (r.recommendedCommands.length) {
+    for (const c of r.recommendedCommands) {
+      lines.push(`- **${c.name}** (${c.category}): \`${c.command}\` — ${c.reason} ${c.runtimeVerified ? "" : "· ✗ not verified"}`);
+    }
+  } else {
+    lines.push("_no commands recommended (none known, or no changes)_");
+  }
+  lines.push("");
+
+  lines.push("### High confidence (directly evidenced from git)");
+  lines.push(bullets(r.highConfidenceNotes));
+  lines.push("");
+  lines.push("### Inferred (heuristic index links)");
+  lines.push(bullets(r.inferredNotes));
+  lines.push("");
+  lines.push("### What may become stale");
+  lines.push(bullets(r.staleWarnings));
+  lines.push("");
+  lines.push("### Do not know yet");
+  lines.push(bullets(r.doNotKnowYet));
+  lines.push("");
+  lines.push("### Review manually before pushing");
+  lines.push(bullets(r.manualReview));
+  lines.push("");
+  lines.push("### Known unknowns");
+  lines.push(r.knownUnknowns.length ? r.knownUnknowns.map((u) => `- **${u.title}** (${u.kind}, impact ${confBadge(u.confidenceImpact)}) — ${u.detail}`).join("\n") : "_none_");
+  lines.push("");
+  return lines.join("\n");
+}
+
+export function renderChangeReportMarkdown(report: ChangeConfidenceReport): string {
+  const lines: string[] = [];
+  lines.push("# Change Confidence Report (generated)");
+  lines.push("");
+  lines.push("> **Generated from live `git status`/`diff` — not hand-authored.** This report");
+  lines.push("> does **NOT** assert the changes are safe. Recommended tests are NOT run.");
+  lines.push(`> generated: \`${isoUtc(report.generatedAt)}\` · scan version: \`${report.scanVersion}\` · index available: ${report.indexAvailable ? "yes" : "no"}`);
+  lines.push("");
+  lines.push("## Verdict");
+  lines.push(report.verdict);
+  lines.push("");
+  for (const r of report.repos) {
+    lines.push(renderRepoChange(r));
+    lines.push("---");
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+// ---------- Safe Runtime Verification (13-...md §7) ----------
+
+export function renderVerificationMarkdown(store: VerificationStore): string {
+  const lines: string[] = [];
+  lines.push("# Runtime Verification Results (generated)");
+  lines.push("");
+  lines.push("> Results of SAFE, explicit runtime checks. Statically-inferred facts");
+  lines.push("> are NOT here — only things that were actually run/observed.");
+  lines.push(`> generated: \`${isoUtc(store.generatedAt)}\` · scan version: \`${store.scanVersion}\``);
+  lines.push("");
+  lines.push("| check | classification | status | exit | confidence | when | summary |");
+  lines.push("|---|---|---|---|---|---|---|");
+  for (const r of store.results) {
+    const status = r.status === "ran" ? (r.passed ? "PASS" : "FAIL") : r.status;
+    const conf = r.confidenceImpact === "raises" ? "↑ raises" : r.confidenceImpact === "lowers" ? "↓ lowers" : "—";
+    const summary = r.outputSummary.replace(/\n/g, " ").slice(0, 80);
+    lines.push(`| ${r.label} | ${r.classification} | ${status} | ${r.exitCode ?? "—"} | ${conf} | ${isoUtc(r.ranAt)} | ${summary} |`);
+  }
+  lines.push("");
+  const blocked = store.results.filter((r) => r.status === "blocked");
+  if (blocked.length) {
+    lines.push(`**${blocked.length} blocked** (destructive/installing/long-running — never run): ${blocked.map((r) => `\`${r.command}\``).join(", ")}`);
     lines.push("");
   }
   return lines.join("\n");

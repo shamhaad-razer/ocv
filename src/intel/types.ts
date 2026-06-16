@@ -415,3 +415,115 @@ export interface ExplainPackage {
   suggestedFollowups: string[];
   grounding: Grounding;
 }
+
+// ----- Change Confidence Report (08-change-confidence-impact-analysis.md) -----
+
+/** A changed file + the intel entities it touches. */
+export interface ChangedFile {
+  path: string;
+  /** git porcelain status code (e.g. " M", "A ", "??"). */
+  status: string;
+  /** Human-readable change kind. */
+  changeKind: "added" | "modified" | "deleted" | "renamed" | "untracked" | "other";
+  added?: number;
+  deleted?: number;
+  /** Whether this file is covered by the project intelligence index at all. */
+  indexed: boolean;
+  /** Intel entities grounded on this file (routes/scripts/env/deploy/docs/services). */
+  affectedEntities: { kind: string; label: string; locator?: string; confidence: Confidence }[];
+}
+
+/** A recommended command/test to run before pushing (from the command book). */
+export interface RecommendedCommand {
+  repo: string;
+  category: string;
+  name: string;
+  command: string;
+  /** Why it's recommended (e.g. "test command for a repo with code changes"). */
+  reason: string;
+  runtimeVerified: boolean;
+}
+
+/** Per-repo slice of the change confidence report. */
+export interface RepoChangeReport {
+  repo: string;
+  branch: string | null;
+  headCommit: string | null;
+  isGitRepo: boolean;
+  changedFiles: ChangedFile[];
+  /** Counts by change kind, for the summary. */
+  summary: { total: number; code: number; config: number; test: number; deploy: number; docs: number; other: number };
+  recommendedCommands: RecommendedCommand[];
+  /** Findings the report is confident about (directly evidenced). */
+  highConfidenceNotes: string[];
+  /** Inferred / heuristic observations. */
+  inferredNotes: string[];
+  knownUnknowns: KnownUnknown[];
+  /** Artifacts (docs/index) that may go stale because of these changes. */
+  staleWarnings: string[];
+  /** Things the system explicitly cannot determine yet. */
+  doNotKnowYet: string[];
+  /** What the human should eyeball before pushing. */
+  manualReview: string[];
+  grounding: Grounding;
+}
+
+/** The cross-repo change confidence report (08-...md §6). */
+export interface ChangeConfidenceReport {
+  generatedAt: number;
+  scanVersion: string;
+  /** True if a project-intelligence scan was available to link against. */
+  indexAvailable: boolean;
+  repos: RepoChangeReport[];
+  /** Overall: this MVP NEVER asserts "safe" — it states what was/wasn't verified. */
+  verdict: string;
+}
+
+// ----- Safe Runtime Verification (13-...md §7, milestone) -----
+
+/** How a check is classified for safety (13-...md §7 / 07-...md §0 runPolicy). */
+export type CheckClassification = "safe-auto" | "confirm-required" | "blocked";
+
+/** A single verification check the system knows how to run. */
+export interface VerificationCheck {
+  id: string;
+  kind: "tool-version" | "deps-installed" | "env-file" | "port" | "safe-command" | "test-command";
+  /** Human label. */
+  label: string;
+  /** The actual command (program + args) or a synthetic check id. */
+  command?: string;
+  classification: CheckClassification;
+  /** Why it's classified this way (shown to the user). */
+  reason: string;
+}
+
+/** The recorded outcome of running (or refusing) a verification check. */
+export interface VerificationResult {
+  checkId: string;
+  kind: VerificationCheck["kind"];
+  label: string;
+  command?: string;
+  classification: CheckClassification;
+  repo?: string;
+  /** Working directory the check ran in. */
+  cwd?: string;
+  /** "ran" = executed; "skipped" = confirm-required not confirmed; "blocked" = destructive/refused. */
+  status: "ran" | "skipped" | "blocked";
+  exitCode: number | null;
+  /** Pass/fail derived from exitCode (null if not run). */
+  passed: boolean | null;
+  /** Trimmed/capped stdout+stderr summary. */
+  outputSummary: string;
+  /** epoch ms when the check ran (stamped at the edge). */
+  ranAt: number;
+  /** How this result moves confidence for related findings. */
+  confidenceImpact: "raises" | "lowers" | "none";
+  grounding: Grounding;
+}
+
+/** The persisted verification store (read by the command book + change report). */
+export interface VerificationStore {
+  generatedAt: number;
+  scanVersion: string;
+  results: VerificationResult[];
+}

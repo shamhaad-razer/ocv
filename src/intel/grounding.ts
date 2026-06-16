@@ -64,6 +64,69 @@ export function readGitInfo(repoRoot: string): GitInfo {
   };
 }
 
+/** One entry from `git status --porcelain`: a changed file + its status code. */
+export interface GitChange {
+  /** Two-char porcelain status, e.g. " M", "A ", "??", "R ". */
+  status: string;
+  /** Repo-relative path (rename target if renamed). */
+  path: string;
+  /** Added/deleted line counts from numstat, when available. */
+  added?: number;
+  deleted?: number;
+}
+
+/**
+ * Read the working-tree changes for a repo (git status as source of truth).
+ * Returns null for a non-git dir. Includes staged + unstaged + untracked. Pure
+ * read — never mutates the tree.
+ */
+export function readGitChanges(repoRoot: string): GitChange[] | null {
+  const inside = git(repoRoot, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside !== "true") return null;
+
+  const porcelain = git(repoRoot, ["status", "--porcelain"]);
+  if (porcelain === null) return null;
+
+  // Line counts for tracked changes (untracked files won't appear here).
+  const numstat = git(repoRoot, ["diff", "--numstat", "HEAD"]) ?? "";
+  const counts = new Map<string, { added: number; deleted: number }>();
+  for (const line of numstat.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const m = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
+    if (!m) continue;
+    const added = m[1] === "-" ? 0 : parseInt(m[1], 10);
+    const deleted = m[2] === "-" ? 0 : parseInt(m[2], 10);
+    counts.set(m[3], { added, deleted });
+  }
+
+  const changes: GitChange[] = [];
+  for (const line of porcelain.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    // Porcelain v1: "XY <path>". NOTE the shared git() helper trims the whole
+    // output, which can drop a leading space from the FIRST line's status (e.g.
+    // " M f" → "M f"). So split on the first run of whitespace rather than fixed
+    // columns: everything before the first space-gap is the status code.
+    const m = /^(\S{1,2}|\S\s|\s\S)\s+(.*)$/.exec(line);
+    let status: string;
+    let path: string;
+    if (m) {
+      status = m[1].padEnd(2, " ").slice(0, 2);
+      path = m[2];
+    } else {
+      // Fallback: treat first 2 chars as status.
+      status = line.slice(0, 2);
+      path = line.slice(2).trim();
+    }
+    // Renames look like "old -> new"; keep the new path.
+    const arrow = path.indexOf(" -> ");
+    if (arrow !== -1) path = path.slice(arrow + 4);
+    path = path.replace(/^"(.*)"$/, "$1").trim();
+    const c = counts.get(path);
+    changes.push({ status, path, added: c?.added, deleted: c?.deleted });
+  }
+  return changes;
+}
+
 /**
  * The single confidence calculus (§5). Confidence is COMPUTED from evidence, not
  * assigned by feel. A finding with no sources can never exceed "low".

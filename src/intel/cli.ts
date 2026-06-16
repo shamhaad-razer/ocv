@@ -29,11 +29,13 @@ import {
 } from "./onboarding.js";
 import { detectMachineEnv } from "./env.js";
 import { explainSelection, listRepoFiles } from "./explain.js";
-import { renderMachineEnv } from "./render.js";
-import type { ExplainRequest, WorkspaceIntel } from "./types.js";
+import { buildChangeReport } from "./change.js";
+import { mergeVerificationStores, runVerification } from "./verify.js";
+import { renderMachineEnv, renderChangeReportMarkdown } from "./render.js";
+import type { ExplainRequest, VerificationStore, WorkspaceIntel } from "./types.js";
 
 interface Args {
-  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain";
+  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify";
   root: string;
   out: string;
   repos?: string[];
@@ -45,14 +47,20 @@ interface Args {
   target?: string;
   /** explain: experience level for the explanation lens. */
   level?: ExplainRequest["experienceLevel"];
+  /** verify: explicit command to verify (e.g. "vitest run"). */
+  run?: string;
+  /** verify: repo the --run command belongs to. */
+  runRepo?: string;
+  /** verify: explicit user confirmation to run confirm-required checks. */
+  confirmed: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  const cmd = (["check", "diff", "docs", "env", "explain"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
+  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const positionals: string[] = [];
-  const VALUELESS = new Set(["no-write"]);
+  const VALUELESS = new Set(["no-write", "confirm"]);
   for (let i = 1; i < argv.length; i++) {
     if (argv[i].startsWith("--")) {
       const key = argv[i].slice(2);
@@ -77,7 +85,19 @@ function parseArgs(argv: string[]): Args {
     .map((s) => parseInt(s.trim(), 10))
     .filter((n) => Number.isFinite(n));
   const level = flags.get("level") as Args["level"] | undefined;
-  return { cmd, root, out, repos, write: !bools.has("no-write"), checkPorts, target: positionals[0], level };
+  return {
+    cmd,
+    root,
+    out,
+    repos,
+    write: !bools.has("no-write"),
+    checkPorts,
+    target: positionals[0],
+    level,
+    run: flags.get("run") || undefined,
+    runRepo: flags.get("repo") || undefined,
+    confirmed: bools.has("confirm"),
+  };
 }
 
 /** Parse "<repo>/<path>:<startLine>-<endLine>" (or ":<line>") into an ExplainRequest. */
@@ -323,6 +343,85 @@ function runExplain(args: Args, now: number): void {
   process.stdout.write(JSON.stringify(pkg, null, 2) + "\n");
 }
 
+/**
+ * Change Confidence Report: inspect live git changes across the indexed repos,
+ * link them to intel entities, recommend tests, and report risk — WITHOUT
+ * claiming safety and WITHOUT running tests. Writes change-report.md + .json.
+ */
+/** Load the persisted verification store if present (used by the change report). */
+function loadVerificationStore(out: string): VerificationStore | null {
+  const p = join(out, "verification.json");
+  if (!existsSync(p)) return null;
+  try {
+    return JSON.parse(readFileSync(p, "utf-8")) as VerificationStore;
+  } catch {
+    return null;
+  }
+}
+
+function runReport(args: Args, now: number): void {
+  const jsonPath = join(args.out, "project-intel.json");
+  if (!existsSync(jsonPath)) {
+    console.error(`[report] no scan at ${jsonPath} — run \`scan\` first (the report links changes to the index)`);
+    process.exit(1);
+  }
+  const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
+  // Fold in any prior verification results so the report reflects runtime evidence.
+  const verification = loadVerificationStore(args.out);
+  const report = buildChangeReport(ws, { generatedAt: now, verification });
+
+  const mdPath = join(args.out, "change-report.md");
+  const reportJson = join(args.out, "change-report.json");
+  writeFileSync(mdPath, renderChangeReportMarkdown(report), "utf-8");
+  writeFileSync(reportJson, JSON.stringify(report, null, 2), "utf-8");
+
+  for (const r of report.repos) {
+    if (r.summary.total > 0) console.log(`[report] ${r.repo}: ${r.summary.total} changed file(s), ${r.recommendedCommands.length} recommended command(s)`);
+  }
+  if (verification) console.log(`[report] folded in ${verification.results.length} prior verification result(s)`);
+  console.log(`[report] ${report.verdict}`);
+  console.log(`[report] wrote ${mdPath} + ${reportJson}`);
+}
+
+/**
+ * Safe Runtime Verification: run the safe-auto suite (tool versions, deps,
+ * env-file existence) always; run an explicit --run command ONLY if its
+ * classification allows it (safe-auto runs; confirm-required needs --confirm;
+ * blocked is refused). Results are merged into verification.json.
+ */
+async function runVerify(args: Args, now: number): Promise<void> {
+  const jsonPath = join(args.out, "project-intel.json");
+  if (!existsSync(jsonPath)) {
+    console.error(`[verify] no scan at ${jsonPath} — run \`scan\` first`);
+    process.exit(1);
+  }
+  const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
+
+  const runCommand = args.run ? { repo: args.runRepo ?? ws.repos[0]?.name ?? "", command: args.run } : undefined;
+  if (runCommand && !args.runRepo) {
+    console.log(`[verify] no --repo given; assuming \`${runCommand.repo}\``);
+  }
+
+  const store = await runVerification(ws, { generatedAt: now, runCommand, confirmed: args.confirmed });
+
+  // Merge onto any prior store so accumulated evidence persists.
+  const prev = loadVerificationStore(args.out);
+  const merged = mergeVerificationStores(prev, store);
+  mkdirSync(args.out, { recursive: true });
+  writeFileSync(join(args.out, "verification.json"), JSON.stringify(merged, null, 2), "utf-8");
+
+  // Report what happened, classification-first (transparency).
+  for (const r of store.results) {
+    const tag = r.status === "ran" ? (r.passed === true ? "PASS" : r.passed === false ? "FAIL" : "UNKNOWN") : r.status.toUpperCase();
+    console.log(`[verify] [${r.classification}] ${r.label}: ${tag}${r.exitCode != null ? ` (exit ${r.exitCode})` : ""}`);
+  }
+  const blocked = store.results.filter((r) => r.status === "blocked");
+  const skipped = store.results.filter((r) => r.status === "skipped");
+  if (blocked.length) console.log(`[verify] ${blocked.length} check(s) BLOCKED (destructive/installing/long-running) — never run.`);
+  if (skipped.length) console.log(`[verify] ${skipped.length} check(s) skipped — re-run with --confirm to execute confirm-required checks.`);
+  console.log(`[verify] wrote ${join(args.out, "verification.json")} (${merged.results.length} total result(s))`);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now(); // injected here at the edge ONLY
@@ -331,6 +430,8 @@ async function main(): Promise<void> {
   else if (args.cmd === "docs") runDocs(args);
   else if (args.cmd === "env") await runEnv(args, now);
   else if (args.cmd === "explain") runExplain(args, now);
+  else if (args.cmd === "report") runReport(args, now);
+  else if (args.cmd === "verify") await runVerify(args, now);
   else await runScan(args, now);
 }
 
