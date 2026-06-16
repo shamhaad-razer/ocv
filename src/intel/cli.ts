@@ -1,20 +1,27 @@
-// CLI entry for the project-intelligence scanner (milestone 1).
+// CLI entry for the project-intelligence scanner.
 //
-// This is the EDGE: it injects the wall-clock time (so the pure scan layer stays
-// deterministic), discovers sibling repos, scans each, writes a grounded JSON
-// index + a human markdown map, and supports `--check` to re-verify freshness of
-// a prior scan without re-deriving (foundation for incremental re-indexing).
+// This is the EDGE: it injects wall-clock time, scans a TARGET PROJECT, and
+// writes a grounded index to HOST storage (NEVER into the target — see
+// HOST_VS_TARGET_PROJECT_MODEL.md).
+//
+// Host vs target (the key distinction, course-corrected in prompt 23):
+//   --target <dir>  the EXTERNAL project to study (alias: --root). Read-only.
+//   --out <dir>     where OpenClaw writes the index. Defaults to a HOST-side
+//                   per-target dir under ~/.openclaw-intel/<hash>, so scanning an
+//                   external project NEVER creates files inside it.
+//   --repos a,b,c   limit to these subdirs of the target (else auto-detected).
 //
 // Usage:
-//   node dist-scan/cli.mjs scan   [--root <dir>] [--out <dir>] [--repos a,b,c]
-//   node dist-scan/cli.mjs check  [--root <dir>] [--out <dir>] [--no-write]
-//   node dist-scan/cli.mjs diff   [--root <dir>] [--out <dir>]
-//
-// Defaults: root = parent of the repo this CLI lives in (the workspace), repos =
-// auto-detected immediate subdirectories that contain a manifest or .git, out =
-// <root>/.openclaw.
+//   node dist-scan/cli.mjs scan    --target <dir> [--out <dir>] [--repos a,b,c]
+//   node dist-scan/cli.mjs check   --target <dir> [--out <dir>] [--no-write]
+//   node dist-scan/cli.mjs diff    --target <dir> [--out <dir>]
+//   node dist-scan/cli.mjs report  --target <dir> [--out <dir>]
+//   node dist-scan/cli.mjs explain "<repo>/<path>:<a>-<b>" --target <dir>
+//   node dist-scan/cli.mjs verify  --target <dir> [--run "<cmd>" --repo <r> --confirm]
 
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { hashFile, SCAN_VERSION } from "./grounding.js";
 import { scanRepo } from "./scanner.js";
@@ -36,15 +43,19 @@ import type { ExplainRequest, VerificationStore, WorkspaceIntel } from "./types.
 
 interface Args {
   cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify";
-  root: string;
+  /** Resolved absolute path of the TARGET PROJECT being studied (read-only). */
+  targetPath: string;
+  /** Whether the user explicitly supplied --target/--root (vs the legacy default). */
+  targetExplicit: boolean;
+  /** HOST storage dir for the index — NEVER inside the target project. */
   out: string;
   repos?: string[];
   /** check: write invalidated freshness back to the artifact (default true). */
   write: boolean;
   /** env: ports to probe (opt-in, requires the user to pass --check-ports). */
   checkPorts?: number[];
-  /** explain: positional target "<repo>/<path>:<startLine>-<endLine>". */
-  target?: string;
+  /** explain: positional selection "<repo>/<path>:<startLine>-<endLine>". */
+  selection?: string;
   /** explain: experience level for the explanation lens. */
   level?: ExplainRequest["experienceLevel"];
   /** verify: explicit command to verify (e.g. "vitest run"). */
@@ -53,6 +64,13 @@ interface Args {
   runRepo?: string;
   /** verify: explicit user confirmation to run confirm-required checks. */
   confirmed: boolean;
+}
+
+/** Stable per-target host storage dir under ~/.openclaw-intel/<name>-<hash>. */
+function defaultOutFor(targetPath: string): string {
+  const hash = createHash("sha256").update(targetPath).digest("hex").slice(0, 12);
+  const name = (targetPath.split("/").filter(Boolean).pop() || "target").replace(/[^A-Za-z0-9_-]/g, "_");
+  return join(homedir(), ".openclaw-intel", `${name}-${hash}`);
 }
 
 function parseArgs(argv: string[]): Args {
@@ -74,10 +92,16 @@ function parseArgs(argv: string[]): Args {
       positionals.push(argv[i]);
     }
   }
-  // Default workspace root = two levels up from src/intel (i.e. the repo's parent).
-  const defaultRoot = resolve(process.cwd(), "..");
-  const root = resolve(flags.get("root") ?? defaultRoot);
-  const out = resolve(flags.get("out") ?? join(root, ".openclaw"));
+  // TARGET PROJECT: --target (preferred) or --root (back-compat alias). Default
+  // (legacy) is the dir two levels up from this CLI = the OpenClaw workspace, but
+  // that's flagged non-explicit so commands can warn.
+  const targetFlag = flags.get("target") ?? flags.get("root");
+  const targetExplicit = targetFlag != null;
+  const legacyDefault = resolve(process.cwd(), "..");
+  const targetPath = resolve(targetFlag ?? legacyDefault);
+  // HOST storage: explicit --out wins; otherwise a host-side per-target dir.
+  // NEVER default to a path inside the target project (prompt-23 read-only policy).
+  const out = resolve(flags.get("out") ?? defaultOutFor(targetPath));
   const repos = flags.get("repos")?.split(",").map((s) => s.trim()).filter(Boolean);
   const checkPorts = flags
     .get("check-ports")
@@ -87,17 +111,33 @@ function parseArgs(argv: string[]): Args {
   const level = flags.get("level") as Args["level"] | undefined;
   return {
     cmd,
-    root,
+    targetPath,
+    targetExplicit,
     out,
     repos,
     write: !bools.has("no-write"),
     checkPorts,
-    target: positionals[0],
+    selection: positionals[0],
     level,
     run: flags.get("run") || undefined,
     runRepo: flags.get("repo") || undefined,
     confirmed: bools.has("confirm"),
   };
+}
+
+/**
+ * Validate the target project path: must exist and be a directory. Returns an
+ * error string (caller exits) or null. This is the guard that keeps OpenClaw
+ * from scanning a bogus/typo'd target.
+ */
+function validateTarget(targetPath: string): string | null {
+  if (!existsSync(targetPath)) return `target path does not exist: ${targetPath}`;
+  try {
+    if (!statSync(targetPath).isDirectory()) return `target path is not a directory: ${targetPath}`;
+  } catch (err) {
+    return `target path not accessible: ${targetPath} (${(err as Error).message})`;
+  }
+  return null;
 }
 
 /** Parse "<repo>/<path>:<startLine>-<endLine>" (or ":<line>") into an ExplainRequest. */
@@ -137,19 +177,31 @@ function detectRepos(root: string): string[] {
 }
 
 async function runScan(args: Args, now: number): Promise<void> {
-  const repoNames = args.repos ?? detectRepos(args.root);
-  if (repoNames.length === 0) {
-    console.error(`[scan] no repos found under ${args.root}`);
+  const err = validateTarget(args.targetPath);
+  if (err) {
+    console.error(`[scan] ${err}`);
     process.exit(1);
   }
-  const repos = repoNames.map((name) => scanRepo(join(args.root, name), { generatedAt: now }));
+  if (!args.targetExplicit) {
+    console.error(`[scan] WARNING: no --target given; defaulting to \`${args.targetPath}\`. Pass --target <project-path> to study an external project.`);
+  }
+  console.error(`[scan] target project: ${args.targetPath}`);
+  console.error(`[scan] writing index to HOST storage: ${args.out} (target is NOT modified)`);
+
+  const repoNames = args.repos ?? detectRepos(args.targetPath);
+  if (repoNames.length === 0) {
+    console.error(`[scan] no repos found under ${args.targetPath}`);
+    process.exit(1);
+  }
+  const repos = repoNames.map((name) => scanRepo(join(args.targetPath, name), { generatedAt: now }));
 
   // Safe local environment detection (read-only probes only; ports NOT checked
   // during scan — that's opt-in via `env --check-ports`).
   const { env, unknowns: envUnknowns } = await detectMachineEnv({ generatedAt: now });
 
   const ws: WorkspaceIntel = {
-    rootPath: args.root,
+    rootPath: args.targetPath,
+    targetPath: args.targetPath,
     scanVersion: SCAN_VERSION,
     generatedAt: now,
     repos,
@@ -318,18 +370,18 @@ async function runEnv(args: Args, now: number): Promise<void> {
  * scan for index context + the working tree for the selected lines + caller search.
  */
 function runExplain(args: Args, now: number): void {
-  if (!args.target) {
-    console.error('[explain] usage: explain "<repo>/<path>:<startLine>-<endLine>" [--level junior]');
+  if (!args.selection) {
+    console.error('[explain] usage: explain "<repo>/<path>:<startLine>-<endLine>" --target <project-path> [--level junior]');
     process.exit(1);
   }
-  const req = parseExplainTarget(args.target, args.level);
+  const req = parseExplainTarget(args.selection, args.level);
   if (!req) {
-    console.error(`[explain] could not parse target "${args.target}" — expected "<repo>/<path>:<start>-<end>"`);
+    console.error(`[explain] could not parse selection "${args.selection}" — expected "<repo>/<path>:<start>-<end>"`);
     process.exit(1);
   }
   const jsonPath = join(args.out, "project-intel.json");
   if (!existsSync(jsonPath)) {
-    console.error(`[explain] no scan at ${jsonPath} — run \`scan\` first`);
+    console.error(`[explain] no scan at ${jsonPath} for target \`${args.targetPath}\` — run \`scan --target <path>\` first`);
     process.exit(1);
   }
   const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;

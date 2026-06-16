@@ -326,6 +326,7 @@ export function buildChangeReport(ws: WorkspaceIntel, opts: ChangeOptions): Chan
   return {
     generatedAt: now,
     scanVersion: ws.scanVersion,
+    targetPath: ws.targetPath ?? ws.rootPath,
     indexAvailable: ws.repos.length > 0,
     repos,
     verdict,

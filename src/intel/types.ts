@@ -192,7 +192,10 @@ export interface RepoIntel {
 
 /** Workspace = the parent dir holding multiple repos. */
 export interface WorkspaceIntel {
+  /** @deprecated alias of targetPath (kept for back-compat with earlier scans). */
   rootPath: string;
+  /** The TARGET PROJECT path this index describes (the external project studied). */
+  targetPath?: string;
   scanVersion: string;
   generatedAt: number;
   repos: RepoIntel[];
@@ -472,6 +475,8 @@ export interface RepoChangeReport {
 export interface ChangeConfidenceReport {
   generatedAt: number;
   scanVersion: string;
+  /** The target project path this report describes. */
+  targetPath?: string;
   /** True if a project-intelligence scan was available to link against. */
   indexAvailable: boolean;
   repos: RepoChangeReport[];

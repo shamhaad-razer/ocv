@@ -174,7 +174,7 @@ export function renderWorkspaceMarkdown(ws: WorkspaceIntel): string {
   lines.push("> Evidence kinds: declared/parsed = directly evidenced · heuristic/inferred = inferred · verification is `static` (NOT runtime-verified yet).");
   lines.push("");
   lines.push("## Scan metadata");
-  lines.push(`- workspace: \`${ws.rootPath}\``);
+  lines.push(`- target project: \`${ws.targetPath ?? ws.rootPath}\``);
   lines.push(`- scan version: \`${ws.scanVersion}\``);
   lines.push(`- generated at: \`${isoUtc(ws.generatedAt)}\` (epoch ms: ${ws.generatedAt})`);
   lines.push(`- repos scanned: ${ws.repos.map((r) => `\`${r.name}\``).join(", ")}`);
@@ -356,6 +356,7 @@ export function renderChangeReportMarkdown(report: ChangeConfidenceReport): stri
   lines.push("");
   lines.push("> **Generated from live `git status`/`diff` — not hand-authored.** This report");
   lines.push("> does **NOT** assert the changes are safe. Recommended tests are NOT run.");
+  lines.push(`> target project: \`${report.targetPath ?? "?"}\``);
   lines.push(`> generated: \`${isoUtc(report.generatedAt)}\` · scan version: \`${report.scanVersion}\` · index available: ${report.indexAvailable ? "yes" : "no"}`);
   lines.push("");
   lines.push("## Verdict");

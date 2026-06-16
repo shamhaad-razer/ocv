@@ -271,6 +271,7 @@ export function renderOverview(ws: WorkspaceIntel): string {
   lines.push("");
   lines.push("> **Generated artifact — not hand-authored truth.** Re-run `npm run scan`");
   lines.push("> after changes. Cross-repo runtime wiring is NOT yet mapped (see gaps).");
+  lines.push(`> target project: \`${ws.targetPath ?? ws.rootPath}\``);
   lines.push(`> generated: \`${isoUtc(ws.generatedAt)}\` · scan version: \`${ws.scanVersion}\``);
   lines.push("");
 
