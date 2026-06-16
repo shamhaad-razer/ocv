@@ -139,6 +139,24 @@ export interface KnownUnknown {
   confidenceImpact: Confidence;
 }
 
+/**
+ * Transparency record: what the scan actually covered vs. skipped (§ output
+ * requirement "what was scanned / what was skipped"). Makes the boundary of the
+ * system's knowledge explicit rather than implied.
+ */
+export interface ScanCoverage {
+  /** Count of files inventoried (after ignore rules). */
+  filesScanned: number;
+  /** Top-level directories that were walked. */
+  dirsScanned: string[];
+  /** Directory names skipped by the ignore list (vendored/build/etc.). */
+  dirsSkipped: string[];
+  /** True if the file-walk hit the maxFiles cap (knowledge is incomplete). */
+  truncated: boolean;
+  /** The cap that was applied. */
+  maxFiles: number;
+}
+
 /** Per-repo intelligence: the grounded map of one repository. */
 export interface RepoIntel {
   name: string;
@@ -147,6 +165,7 @@ export interface RepoIntel {
   gitCommit: string | null;
   isGitRepo: boolean;
   languages: string[];
+  coverage: ScanCoverage;
   importantDirs: Finding<string>[];
   packageFiles: Finding<string>[];
   scripts: Finding<DetectedScript>[];
@@ -168,4 +187,41 @@ export interface WorkspaceIntel {
   repos: RepoIntel[];
   /** Cross-repo edges are out of MVP scope; tracked as a known-unknown instead. */
   knownUnknowns: KnownUnknown[];
+}
+
+// ----- Scan-to-scan comparison (requirement 8) -----
+
+/** One changed finding between two scans, identified by a stable key. */
+export interface FindingDelta {
+  /** Stable identity within a section, e.g. a script name or "METHOD path". */
+  key: string;
+  /** Which section it lives in (scripts, routes, envVars, ...). */
+  section: string;
+  change: "added" | "removed" | "changed";
+  /** Human-readable before/after for the change. */
+  before?: string;
+  after?: string;
+}
+
+/** Per-repo diff between a previous and a current scan. */
+export interface RepoDiff {
+  name: string;
+  /** Commit transition, if the repo moved. */
+  commitBefore: string | null;
+  commitAfter: string | null;
+  branchBefore: string | null;
+  branchAfter: string | null;
+  deltas: FindingDelta[];
+  /** Known-unknowns opened/closed between scans. */
+  unknownsOpened: string[];
+  unknownsResolved: string[];
+}
+
+/** Workspace-level diff: which repos changed and how. */
+export interface WorkspaceDiff {
+  prevGeneratedAt: number;
+  nextGeneratedAt: number;
+  reposAdded: string[];
+  reposRemoved: string[];
+  repoDiffs: RepoDiff[];
 }

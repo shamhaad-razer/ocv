@@ -161,3 +161,35 @@ export function recheckFreshness(
   }
   return { status: "fresh" };
 }
+
+/**
+ * Invalidation primitive (§3, requirement 9). Returns a NEW grounding with the
+ * given freshness status written in AND confidence recomputed — because
+ * freshness is an input to the confidence calculus, a stale finding must also
+ * drop confidence. Pure: takes the resolved status, doesn't read the filesystem.
+ */
+export function invalidateGrounding(
+  grounding: Grounding,
+  status: FreshnessStatus,
+  staleReason?: string,
+): Grounding {
+  if (status === "fresh") {
+    // Re-freshening: clear the reason and recompute up from current basis.
+    const basis: ConfidenceBasis = { ...grounding.confidenceBasis, freshness: "fresh" };
+    return {
+      ...grounding,
+      status,
+      staleReason: undefined,
+      confidenceBasis: basis,
+      confidence: computeConfidence(basis),
+    };
+  }
+  const basis: ConfidenceBasis = { ...grounding.confidenceBasis, freshness: status };
+  return {
+    ...grounding,
+    status,
+    staleReason,
+    confidenceBasis: basis,
+    confidence: computeConfidence(basis),
+  };
+}

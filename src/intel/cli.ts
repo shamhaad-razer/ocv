@@ -7,7 +7,8 @@
 //
 // Usage:
 //   node dist-scan/cli.mjs scan   [--root <dir>] [--out <dir>] [--repos a,b,c]
-//   node dist-scan/cli.mjs check  [--root <dir>] [--out <dir>]
+//   node dist-scan/cli.mjs check  [--root <dir>] [--out <dir>] [--no-write]
+//   node dist-scan/cli.mjs diff   [--root <dir>] [--out <dir>]
 //
 // Defaults: root = parent of the repo this CLI lives in (the workspace), repos =
 // auto-detected immediate subdirectories that contain a manifest or .git, out =
@@ -15,25 +16,36 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { hashFile, recheckFreshness, SCAN_VERSION } from "./grounding.js";
+import { hashFile, SCAN_VERSION } from "./grounding.js";
 import { scanRepo } from "./scanner.js";
-import { renderWorkspaceMarkdown } from "./render.js";
-import type { Grounding, RepoIntel, WorkspaceIntel } from "./types.js";
+import { renderWorkspaceMarkdown, renderDiffMarkdown } from "./render.js";
+import { compareWorkspaces, hasChanges } from "./compare.js";
+import { invalidateWorkspace } from "./invalidate.js";
+import type { WorkspaceIntel } from "./types.js";
 
 interface Args {
-  cmd: "scan" | "check";
+  cmd: "scan" | "check" | "diff";
   root: string;
   out: string;
   repos?: string[];
+  /** check: write invalidated freshness back to the artifact (default true). */
+  write: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  const cmd = (argv[0] === "check" ? "check" : "scan") as Args["cmd"];
+  const cmd = (["check", "diff"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
+  const bools = new Set<string>();
+  const VALUELESS = new Set(["no-write"]);
   for (let i = 1; i < argv.length; i++) {
     if (argv[i].startsWith("--")) {
-      flags.set(argv[i].slice(2), argv[i + 1] ?? "");
-      i++;
+      const key = argv[i].slice(2);
+      if (VALUELESS.has(key)) {
+        bools.add(key);
+      } else {
+        flags.set(key, argv[i + 1] ?? "");
+        i++;
+      }
     }
   }
   // Default workspace root = two levels up from src/intel (i.e. the repo's parent).
@@ -41,7 +53,7 @@ function parseArgs(argv: string[]): Args {
   const root = resolve(flags.get("root") ?? defaultRoot);
   const out = resolve(flags.get("out") ?? join(root, ".openclaw"));
   const repos = flags.get("repos")?.split(",").map((s) => s.trim()).filter(Boolean);
-  return { cmd, root, out, repos };
+  return { cmd, root, out, repos, write: !bools.has("no-write") };
 }
 
 /** Detect candidate repos: immediate subdirs with a manifest or a .git dir. */
@@ -101,6 +113,13 @@ function runScan(args: Args, now: number): void {
   mkdirSync(args.out, { recursive: true });
   const jsonPath = join(args.out, "project-intel.json");
   const mdPath = join(args.out, "project-map.md");
+  const prevPath = join(args.out, "project-intel.prev.json");
+
+  // Archive the previous scan so `diff` can compare without external storage.
+  if (existsSync(jsonPath)) {
+    writeFileSync(prevPath, readFileSync(jsonPath, "utf-8"), "utf-8");
+  }
+
   writeFileSync(jsonPath, JSON.stringify(ws, null, 2), "utf-8");
   writeFileSync(mdPath, renderWorkspaceMarkdown(ws), "utf-8");
 
@@ -117,50 +136,69 @@ function runCheck(args: Args): void {
     process.exit(1);
   }
   const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
-  let drifted = 0;
-  for (const repo of ws.repos) {
-    // Re-verify EVERY cited source file across all findings, not just the
-    // repo-level manifests — otherwise a change to e.g. a route file would be
-    // silently missed (which would be a dishonest "fresh"). Build one combined
-    // grounding over the union of all fileHashes recorded for this repo.
-    const combined = combinedGrounding(repo);
-    const res = recheckFreshness(combined, (ref) => hashFile(join(repo.rootPath, ref)));
-    const tag = res.status === "fresh" ? "fresh" : `STALE (${res.staleReason})`;
-    console.log(`[check] ${repo.name}: ${tag}`);
-    if (res.status !== "fresh") drifted++;
+
+  // Finding-level invalidation: re-hash each finding's cited sources and mark
+  // the drifted ones potentially-stale (recomputing confidence). This is the
+  // simple invalidation strategy — mark, don't re-derive.
+  const { workspace: invalidated, summaries } = invalidateWorkspace(ws, (repo, ref) =>
+    hashFile(join(repo.rootPath, ref)),
+  );
+
+  let driftedRepos = 0;
+  for (const s of summaries) {
+    if (s.staleFindings > 0 || s.repoStatus !== "fresh") {
+      driftedRepos++;
+      console.log(`[check] ${s.repo}: ${s.repoStatus} — ${s.staleFindings}/${s.totalFindings} finding(s) potentially stale`);
+    } else {
+      console.log(`[check] ${s.repo}: fresh`);
+    }
   }
-  console.log(`[check] ${drifted} of ${ws.repos.length} repo(s) may be stale.`);
-  if (drifted > 0) process.exit(2); // non-zero so CI/scripts can react
+
+  if (args.write) {
+    // Persist the invalidated freshness back so downstream readers see it.
+    writeFileSync(jsonPath, JSON.stringify(invalidated, null, 2), "utf-8");
+    writeFileSync(join(args.out, "project-map.md"), renderWorkspaceMarkdown(invalidated), "utf-8");
+    console.log(`[check] wrote invalidated freshness back to ${jsonPath} + project-map.md`);
+  } else {
+    console.log(`[check] --no-write: not persisting (report only)`);
+  }
+
+  console.log(`[check] ${driftedRepos} of ${ws.repos.length} repo(s) have potentially-stale findings.`);
+  if (driftedRepos > 0) process.exit(2); // non-zero so CI/scripts can react
 }
 
-/** Union every fileHash recorded across a repo's findings into one Grounding. */
-function combinedGrounding(repo: RepoIntel): Grounding {
-  const seen = new Map<string, string>();
-  const collect = (g: Grounding) => {
-    for (const fh of g.fileHashes) if (!seen.has(fh.ref)) seen.set(fh.ref, fh.hash);
-  };
-  collect(repo.grounding);
-  const findingArrays = [
-    repo.importantDirs,
-    repo.packageFiles,
-    repo.scripts,
-    repo.services,
-    repo.routes,
-    repo.envFiles,
-    repo.envVars,
-    repo.deployFiles,
-  ];
-  for (const arr of findingArrays) for (const f of arr) collect(f.grounding);
-  return {
-    ...repo.grounding,
-    fileHashes: [...seen].map(([ref, hash]) => ({ ref, hash })),
-  };
+function runDiff(args: Args): void {
+  const jsonPath = join(args.out, "project-intel.json");
+  const prevPath = join(args.out, "project-intel.prev.json");
+  if (!existsSync(prevPath)) {
+    console.error(`[diff] no archived previous scan at ${prevPath} — run \`scan\` at least twice first`);
+    process.exit(1);
+  }
+  if (!existsSync(jsonPath)) {
+    console.error(`[diff] no current scan at ${jsonPath} — run \`scan\` first`);
+    process.exit(1);
+  }
+  const prev = JSON.parse(readFileSync(prevPath, "utf-8")) as WorkspaceIntel;
+  const next = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
+  const diff = compareWorkspaces(prev, next);
+  const mdPath = join(args.out, "project-diff.md");
+  writeFileSync(mdPath, renderDiffMarkdown(diff), "utf-8");
+
+  const changed = hasChanges(diff);
+  for (const r of diff.repoDiffs) {
+    const moved = r.commitBefore !== r.commitAfter;
+    if (r.deltas.length || r.unknownsOpened.length || r.unknownsResolved.length || moved) {
+      console.log(`[diff] ${r.name}: ${r.deltas.length} delta(s)${moved ? `, commit ${r.commitBefore}→${r.commitAfter}` : ""}`);
+    }
+  }
+  console.log(`[diff] ${changed ? "changes detected" : "no changes"}; wrote ${mdPath}`);
 }
 
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now(); // injected here at the edge ONLY
   if (args.cmd === "check") runCheck(args);
+  else if (args.cmd === "diff") runDiff(args);
   else runScan(args, now);
 }
 

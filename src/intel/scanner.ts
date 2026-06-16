@@ -81,6 +81,7 @@ export interface ScanOptions {
 interface WalkResult {
   files: string[]; // repo-relative paths
   dirs: string[]; // top-level dirs (repo-relative)
+  skippedDirs: string[]; // top-level dir names skipped by ignore rules
   truncated: boolean;
 }
 
@@ -88,6 +89,7 @@ interface WalkResult {
 function walkRepo(root: string, maxFiles: number): WalkResult {
   const files: string[] = [];
   const topDirs = new Set<string>();
+  const skipped = new Set<string>();
   let truncated = false;
 
   const stack: string[] = [root];
@@ -109,7 +111,10 @@ function walkRepo(root: string, maxFiles: number): WalkResult {
       }
       const rel = relative(root, abs);
       if (isDir) {
-        if (IGNORE_DIRS.has(name)) continue;
+        if (IGNORE_DIRS.has(name)) {
+          if (!rel.includes("/")) skipped.add(name); // record top-level skips
+          continue;
+        }
         if (!rel.includes("/")) topDirs.add(rel); // top-level only
         stack.push(abs);
       } else {
@@ -121,7 +126,7 @@ function walkRepo(root: string, maxFiles: number): WalkResult {
       }
     }
   }
-  return { files, dirs: [...topDirs].sort(), truncated };
+  return { files, dirs: [...topDirs].sort(), skippedDirs: [...skipped].sort(), truncated };
 }
 
 function fileSource(root: string, rel: string): SourceRef {
@@ -308,7 +313,8 @@ export function scanRepo(repoRoot: string, opts: ScanOptions): RepoIntel {
   _routeCtx = { generatedAt, baseCommit };
 
   const name = repoRoot.split("/").filter(Boolean).pop() ?? repoRoot;
-  const { files, dirs, truncated } = walkRepo(repoRoot, maxFiles);
+  const { files, dirs, skippedDirs, truncated } = walkRepo(repoRoot, maxFiles);
+  const coverage = { filesScanned: files.length, dirsScanned: dirs, dirsSkipped: skippedDirs, truncated, maxFiles };
 
   const knownUnknowns: KnownUnknown[] = [];
   const addUnknown = (u: Omit<KnownUnknown, "id"> & { id?: string }): string => {
@@ -461,6 +467,7 @@ export function scanRepo(repoRoot: string, opts: ScanOptions): RepoIntel {
     gitCommit: git.commit,
     isGitRepo: git.isGitRepo,
     languages: [...langSet].sort(),
+    coverage,
     importantDirs,
     packageFiles,
     scripts,
