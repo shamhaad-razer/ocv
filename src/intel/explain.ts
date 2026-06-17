@@ -16,6 +16,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { buildGrounding, hashFile } from "./grounding.js";
 import { findReferences } from "./references.js";
+import { flowForRepo } from "./flowmap.js";
 import type { SymbolReference } from "./types.js";
 import type {
   Confidence,
@@ -339,13 +340,18 @@ export function explainSelection(req: ExplainRequest, ws: WorkspaceIntel, opts: 
     knownUnknownIds: knownUnknowns.map((u) => u.id),
   });
 
+  // --- cross-repo flow context (inferred) for this file's repo (prompt 34) ---
+  const flowContext = ws.flowMap
+    ? flowForRepo(ws.flowMap, repo.name).edges.map((e) => ({ from: e.from, to: e.to, kind: e.kind, label: e.label, confidence: e.confidence }))
+    : [];
+
   // --- module / service area the file likely belongs to ---
   // Prefer a detected service whose evidence is this file; else the top-level dir.
   const svcForFile = repo.services.find((s) => s.value.evidence === req.path);
   const topDir = req.path.includes("/") ? req.path.split("/")[0] : null;
   const moduleArea = svcForFile ? `${svcForFile.value.name} (${svcForFile.value.kind} service)` : topDir;
 
-  const explanation = buildExplanation(req, enclosing, callees, callers, related, selected.length, moduleArea);
+  const explanation = buildExplanation(req, enclosing, callees, callers, related, selected.length, moduleArea, flowContext);
 
   return {
     request: req,
@@ -357,6 +363,7 @@ export function explainSelection(req: ExplainRequest, ws: WorkspaceIntel, opts: 
     likelyCallees: callees,
     symbolsInRange,
     references,
+    flowContext,
     related,
     selectedCode,
     evidence: {
@@ -383,6 +390,7 @@ function buildExplanation(
   related: RelatedIntel,
   lineCount: number,
   moduleArea: string | null,
+  flowContext: { from: string; to: string; kind: string; label: string; confidence: Confidence }[],
 ): string {
   const parts: string[] = [];
   if (req.intent) parts.push(`You asked: "${req.intent}". Here's what the code shows (grounded in the file + scan):`);
@@ -413,6 +421,11 @@ function buildExplanation(
 
   if (related.routes.length) {
     parts.push(`This file declares route(s): ${related.routes.slice(0, 4).map((r) => `\`${r.method} ${r.pathPattern}\``).join(", ")} — so this code likely runs when those endpoints are hit.`);
+  }
+
+  // Cross-repo flow context (inferred — prompt 34).
+  if (flowContext.length) {
+    parts.push(`This repo has inferred cross-repo link(s): ${flowContext.slice(0, 3).map((e) => `${e.from}→${e.to} (${e.kind}, ${e.confidence})`).join("; ")}. (Inferred from shared config/ports/deps — verify before relying.)`);
   }
 
   // What to inspect next (req #3).
@@ -462,6 +475,7 @@ function emptyPackage(
     likelyCallees: [],
     symbolsInRange: [],
     references: [],
+    flowContext: [],
     related: { routes: [], scripts: [], envVars: [], services: [] },
     selectedCode: "",
     evidence: { sources: [], scanGeneratedAt: ws.generatedAt, scanVersion: ws.scanVersion, baseCommit: null },

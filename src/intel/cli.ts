@@ -39,6 +39,8 @@ import { mergeVerificationStores, runVerification } from "./verify.js";
 import { renderMachineEnv, renderChangeReportMarkdown } from "./render.js";
 import { ProjectStorage, hostStorageDir } from "./storage.js";
 import { computeFreshness } from "./freshness.js";
+import { buildFlowMap } from "./flowmap.js";
+import { renderFlowMapMarkdown } from "./render.js";
 import {
   loadRegistry,
   recordScan,
@@ -181,10 +183,9 @@ function parseExplainTarget(target: string, level?: ExplainRequest["experienceLe
   return { repo: m[1], path: m[2], startLine, endLine, experienceLevel: level, intent };
 }
 
-/** Manifest/marker files that make a directory "look like a repo". */
-function looksLikeRepo(dir: string): boolean {
+/** A package/build MANIFEST that makes a directory a repo root (not just `.git`). */
+function hasManifest(dir: string): boolean {
   return (
-    existsSync(join(dir, ".git")) ||
     existsSync(join(dir, "package.json")) ||
     existsSync(join(dir, "pyproject.toml")) ||
     existsSync(join(dir, "go.mod")) ||
@@ -193,25 +194,32 @@ function looksLikeRepo(dir: string): boolean {
   );
 }
 
+/** Does a directory look like a repo? A manifest, or a `.git` dir. */
+function looksLikeRepo(dir: string): boolean {
+  return hasManifest(dir) || existsSync(join(dir, ".git"));
+}
+
 /**
  * Detect candidate repos under a target.
- * Returns repo-relative paths: "." when the TARGET ITSELF is a repo (the common
- * single-repo external-target case), else the immediate subdirs that look like
- * repos (a multi-repo workspace). This is what lets OpenClaw be pointed at either
- * shape of external project.
+ * Returns repo-relative paths: "." when the TARGET ITSELF is a repo (single-repo),
+ * else the immediate subdirs that are repos (a multi-repo workspace).
+ *
+ * Key nuance (prompt 34): a multi-repo workspace is itself often a git repo, so a
+ * root `.git` alone does NOT make it single-repo. We prefer subdir detection when
+ * the root has no manifest but ≥2 subdirs do (or the root has no manifest and any
+ * subdir does); we only treat the root as a single repo when it has its OWN
+ * manifest, or it's a lone git repo with no repo-like subdirs.
  */
 function detectRepos(root: string): string[] {
-  // Single-repo target: the target path itself is a repo.
-  if (looksLikeRepo(root)) return ["."];
-
-  // Multi-repo workspace: immediate subdirs that look like repos.
   const out: string[] = [];
   let entries: string[];
   try {
     entries = readdirSync(root);
   } catch {
-    return out;
+    return looksLikeRepo(root) ? ["."] : out;
   }
+  // Collect immediate subdirs that are repos (have their own manifest).
+  const subRepos: string[] = [];
   for (const name of entries) {
     if (name.startsWith(".")) continue;
     const abs = join(root, name);
@@ -220,9 +228,19 @@ function detectRepos(root: string): string[] {
     } catch {
       continue;
     }
-    if (looksLikeRepo(abs)) out.push(name);
+    if (hasManifest(abs)) subRepos.push(name);
   }
-  return out.sort();
+
+  // Single-repo: the root itself has a manifest (a monorepo root counts as one
+  // repo here; its packages aren't split — that's a later refinement).
+  if (hasManifest(root)) return ["."];
+  // Multi-repo workspace: root has no manifest but subdirs are repos.
+  if (subRepos.length > 0) return subRepos.sort();
+  // Lone git repo with no manifest and no repo subdirs.
+  if (existsSync(join(root, ".git"))) return ["."];
+
+  // Nothing repo-like found.
+  return out;
 }
 
 async function runScan(args: Args, now: number): Promise<void> {
@@ -259,20 +277,14 @@ async function runScan(args: Args, now: number): Promise<void> {
     generatedAt: now,
     repos,
     machineEnv: env,
-    knownUnknowns: [
-      {
-        id: "workspace:cross-repo-edges",
-        kind: "shallow-graph",
-        title: "cross-repo edges not yet mapped",
-        detail:
-          "This MVP scans each repo independently. Cross-repo wire links (e.g. shared contracts) are not yet stitched (milestone 4+).",
-        evidence: [],
-        status: "open",
-        confidenceImpact: "medium",
-      },
-      ...envUnknowns,
-    ],
+    knownUnknowns: [...envUnknowns],
   };
+
+  // Build the cross-repo flow map (prompt 34) — replaces the old placeholder.
+  // Per-repo file lists (bounded, read-only) feed the URL/port signal detection.
+  const repoFiles: Record<string, string[]> = {};
+  for (const r of repos) repoFiles[r.name] = listRepoFiles(r.rootPath);
+  ws.flowMap = buildFlowMap(ws, { generatedAt: now, repoFiles });
 
   mkdirSync(args.out, { recursive: true });
   const jsonPath = join(args.out, "project-intel.json");
@@ -291,6 +303,12 @@ async function runScan(args: Args, now: number): Promise<void> {
   console.log(`[scan] scanned ${repos.length} repo(s); ${totalUnknowns} known-unknown(s) recorded`);
   console.log(`[scan] wrote ${jsonPath}`);
   console.log(`[scan] wrote ${mdPath}`);
+
+  // Cross-repo flow map (multi-repo workspaces).
+  if (ws.flowMap) {
+    writeFileSync(join(args.out, "flow-map.md"), renderFlowMapMarkdown(ws.flowMap), "utf-8");
+    console.log(`[scan] flow map: ${ws.flowMap.nodes.filter((n) => n.kind === "repo").length} repo(s), ${ws.flowMap.edges.length} cross-repo edge(s) → ${join(args.out, "flow-map.md")}`);
+  }
 
   // Generate onboarding docs + command book from the same grounded index.
   writeOnboardingDocs(ws, args.out);

@@ -8,6 +8,7 @@ import type {
   ChangeConfidenceReport,
   Confidence,
   Finding,
+  FlowMap,
   FreshnessStatus,
   Grounding,
   KnownUnknown,
@@ -395,4 +396,62 @@ export function renderVerificationMarkdown(store: VerificationStore): string {
     lines.push("");
   }
   return lines.join("\n");
+}
+
+// ---------- Multi-repo flow map (prompt 34) ----------
+
+/** Render the cross-repo flow map as Markdown + a Mermaid diagram. */
+export function renderFlowMapMarkdown(flow: FlowMap): string {
+  const lines: string[] = [];
+  lines.push("# Multi-Repo Flow Map (generated)");
+  lines.push("");
+  lines.push("> **Source-grounded but INFERRED.** Edges come from shared env vars,");
+  lines.push("> package deps, and port/URL references — not a proven runtime call graph.");
+  lines.push("> An edge is a hint to verify; a missing edge ≠ repos are unrelated.");
+  lines.push(`> target: \`${flow.targetPath}\` · generated: \`${isoUtc(flow.generatedAt)}\` · scan version: \`${flow.scanVersion}\``);
+  lines.push("");
+
+  const repoNodes = flow.nodes.filter((n) => n.kind === "repo");
+  lines.push(`## Repos (${repoNodes.length})`);
+  for (const n of repoNodes) {
+    const svcs = flow.nodes.filter((s) => s.repo === n.repo && s.id !== n.id);
+    lines.push(`- \`${n.repo}\`${svcs.length ? ` — services: ${svcs.map((s) => `${s.label}${s.port ? `:${s.port}` : ""}`).join(", ")}` : ""}`);
+  }
+  lines.push("");
+
+  lines.push("## Cross-repo edges");
+  if (flow.edges.length === 0) {
+    lines.push("_no cross-repo relationships inferred from source signals_");
+  } else {
+    for (const e of flow.edges) {
+      lines.push(`- \`${e.from}\` → \`${e.to}\` — ${e.label} (${e.kind}, ${confBadge(e.confidence)}) · evidence: ${e.evidence.map((x) => `\`${x.locator ?? x.ref}\``).join(", ") || "—"}`);
+    }
+  }
+  lines.push("");
+
+  // Mermaid diagram
+  lines.push("## Diagram");
+  lines.push("```mermaid");
+  lines.push("flowchart LR");
+  for (const n of repoNodes) {
+    const svcs = flow.nodes.filter((s) => s.repo === n.repo && s.id !== n.id);
+    const portInfo = svcs.map((s) => s.port).filter(Boolean).join(",");
+    lines.push(`  ${mermaidId(n.repo)}["${n.repo}${portInfo ? ` :${portInfo}` : ""}"]`);
+  }
+  for (const e of flow.edges) {
+    const style = e.confidence === "high" ? "-->" : e.confidence === "medium" ? "-.->" : "-..->";
+    lines.push(`  ${mermaidId(e.from)} ${style}|"${e.kind}"| ${mermaidId(e.to)}`);
+  }
+  lines.push("```");
+  lines.push("> solid = high-confidence (declared dep) · dashed = medium (port/URL) · dotted = low (shared config)");
+  lines.push("");
+
+  lines.push("## Known unknowns");
+  lines.push(renderUnknowns(flow.knownUnknowns));
+  lines.push("");
+  return lines.join("\n");
+}
+
+function mermaidId(s: string): string {
+  return s.replace(/[^A-Za-z0-9_]/g, "_");
 }

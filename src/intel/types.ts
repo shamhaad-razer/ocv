@@ -218,10 +218,58 @@ export interface WorkspaceIntel {
   scanVersion: string;
   generatedAt: number;
   repos: RepoIntel[];
-  /** Cross-repo edges are out of MVP scope; tracked as a known-unknown instead. */
+  /** Workspace-level gaps (incl. cross-repo edges the flow map couldn't infer). */
   knownUnknowns: KnownUnknown[];
   /** Local machine environment (milestone 4). Optional: absent if not detected. */
   machineEnv?: MachineEnv;
+  /** Cross-repo flow map (milestone — prompt 34). Present for multi-repo workspaces. */
+  flowMap?: FlowMap;
+}
+
+// ----- Multi-repo flow map (prompt 34) -----
+
+/** A node in the flow map = a repo (or a service within it). */
+export interface FlowNode {
+  /** Stable id (repo name, or repo:service). */
+  id: string;
+  /** Display label. */
+  label: string;
+  /** The repo this node belongs to. */
+  repo: string;
+  kind: "repo" | "http" | "ws" | "frontend" | "worker" | "cli" | "external";
+  /** Port if known (from a detected service). */
+  port?: number;
+}
+
+/** A source-grounded, confidence-scored edge between two flow nodes. */
+export interface FlowEdge {
+  from: string; // node id
+  to: string; // node id
+  /** What signal implied the edge. */
+  kind:
+    | "shared-env-var"
+    | "shared-package"
+    | "shared-port"
+    | "http-url"
+    | "localhost-port"
+    | "compose-service"
+    | "shared-config-key";
+  /** Human label, e.g. "shares env var DATABASE_URL". */
+  label: string;
+  confidence: Confidence;
+  /** Source evidence for the edge (file:line / var name / port). */
+  evidence: SourceRef[];
+}
+
+/** The cross-repo flow map. */
+export interface FlowMap {
+  generatedAt: number;
+  scanVersion: string;
+  targetPath: string;
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+  /** Gaps the flow map is honest about (what it couldn't infer). */
+  knownUnknowns: KnownUnknown[];
 }
 
 // ----- Local environment awareness (milestone 4, 07-...md §2) -----
@@ -443,6 +491,8 @@ export interface ExplainPackage {
   symbolsInRange: SymbolHit[];
   /** Confidence-classified references to the enclosing symbol (call/import/mention). */
   references: SymbolReference[];
+  /** Cross-repo flow edges touching this file's repo (inferred — prompt 34). */
+  flowContext: { from: string; to: string; kind: string; label: string; confidence: Confidence }[];
   related: RelatedIntel;
   /** The raw selected lines (evidence; trimmed/capped). */
   selectedCode: string;
