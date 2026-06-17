@@ -50,6 +50,7 @@ import {
 import { explainSelection, listRepoFiles } from "./explain.js";
 import { buildContextPack } from "./contextpack.js";
 import { buildDeploymentReport } from "./deployment.js";
+import { buildDashboard } from "./dashboard.js";
 import { buildChangeReport } from "./change.js";
 import { mergeVerificationStores, runVerification } from "./verify.js";
 import { renderChangeReportMarkdown } from "./render.js";
@@ -87,7 +88,7 @@ import { projectIdFor } from "./storage.js";
 import type { ContextMode, ContextPackRequest, EnvironmentProfile, ExplainRequest, KnownUnknown, MachineEnv, OsVariant, VerificationStore, WorkspaceIntel } from "./types.js";
 
 interface Args {
-  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness" | "prefs" | "memory" | "context" | "deploy";
+  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness" | "prefs" | "memory" | "context" | "deploy" | "dashboard";
   /** Resolved absolute path of the TARGET PROJECT being studied (read-only). */
   targetPath: string;
   /** Whether the user explicitly supplied --target/--root (vs the legacy default). */
@@ -135,7 +136,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets", "freshness", "prefs", "memory", "context", "deploy"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
+  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets", "freshness", "prefs", "memory", "context", "deploy", "dashboard"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const positionals: string[] = [];
@@ -560,8 +561,16 @@ async function runEnv(args: Args, now: number): Promise<void> {
   if (sub === "show") {
     const profile = loadEnvironmentProfile();
     if (!profile) {
+      if (args.json) {
+        process.stdout.write(JSON.stringify({ ok: false, available: false, error: "no environment profile yet — run `env refresh`" }) + "\n");
+        return;
+      }
       console.error("[env] no environment profile yet — run `env refresh` (or `env`) to detect + persist one.");
       process.exit(1);
+    }
+    if (args.json) {
+      process.stdout.write(JSON.stringify({ ok: true, available: true, profile, osVariant: effectiveOsVariant(profile), shell: effectiveShell(profile) }) + "\n");
+      return;
     }
     printProfile(profile);
     return;
@@ -765,6 +774,12 @@ function runReport(args: Args, now: number): void {
   writeFileSync(mdPath, md, "utf-8");
   writeFileSync(reportJson, JSON.stringify(report, null, 2), "utf-8");
   const hist = storage.appendReportHistory(now, report, md);
+
+  // Machine-readable for the dashboard/UI: emit the structured report on stdout.
+  if (args.json) {
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    return;
+  }
 
   for (const r of report.repos) {
     if (r.summary.total > 0) console.log(`[report] ${r.repo}: ${r.summary.total} changed file(s), ${r.recommendedCommands.length} recommended command(s)`);
@@ -1255,6 +1270,51 @@ function runDeploy(args: Args, now: number): void {
   process.stdout.write(md + "\n");
 }
 
+/**
+ * Target Project Dashboard aggregate (prompt 40): emit ONE compact, READ-ONLY
+ * JSON rollup for the active/registered target — overview, repo map, command
+ * summary, freshness/confidence/known-unknowns, deployment peek, and the local
+ * environment status. Reads STORED intel + the registry + the host env profile;
+ * runs nothing and writes nothing. Drives the connected UI dashboard.
+ *   dashboard --target <id|name|path> [--json]
+ */
+function runDashboard(args: Args, now: number): void {
+  // Resolve the registry entry (the dashboard is per registered target).
+  const reg = loadRegistry();
+  const entry = resolveTarget(reg, args.targetExplicit ? (args.ref ?? args.targetPath) : args.targetPath)
+    ?? resolveTarget(reg, args.targetPath);
+  if (!entry) {
+    console.error(`[dashboard] target not found in the registry — register/scan it first (looked up \`${args.targetPath}\`).`);
+    process.exit(1);
+  }
+
+  // Load the stored index (null if never scanned — the dashboard degrades honestly).
+  const jsonPath = join(args.out, "project-intel.json");
+  const ws = existsSync(jsonPath) ? (JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel) : null;
+
+  // Fold in the host environment profile summary if one exists (prompt 39).
+  const profile = loadEnvironmentProfile();
+  const environment = profile
+    ? {
+        available: true,
+        osVariant: effectiveOsVariant(profile),
+        shell: effectiveShell(profile),
+        toolsPresent: profile.machine.tools.filter((t) => t.available).map((t) => t.name),
+        toolsMissing: profile.machine.tools.filter((t) => !t.available).map((t) => t.name),
+      }
+    : { available: false };
+
+  const dashboard = buildDashboard({ generatedAt: now, project: entry, ws, environment });
+
+  if (args.json) {
+    process.stdout.write(JSON.stringify(dashboard, null, 2) + "\n");
+    return;
+  }
+  console.error(`[dashboard] ${entry.displayName} (${entry.id}) — scanned=${dashboard.scanned}, confidence=${dashboard.confidence.overall}, freshness=${dashboard.freshness}, ${dashboard.knownUnknowns.total} known-unknown(s)`);
+  console.log(dashboard.summary);
+  process.stdout.write(JSON.stringify(dashboard, null, 2) + "\n");
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now(); // injected here at the edge ONLY
@@ -1271,6 +1331,7 @@ async function main(): Promise<void> {
   else if (args.cmd === "memory") runMemory(args, now);
   else if (args.cmd === "context") runContext(args, now);
   else if (args.cmd === "deploy") runDeploy(args, now);
+  else if (args.cmd === "dashboard") runDashboard(args, now);
   else await runScan(args, now);
 }
 

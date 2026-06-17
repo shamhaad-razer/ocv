@@ -948,3 +948,62 @@ export interface DeploymentReport {
   /** One-paragraph human summary. */
   summary: string;
 }
+
+// ----- Target Project Dashboard (prompt 40) -----
+
+/**
+ * A compact, READ-ONLY aggregate of everything the dashboard needs about ONE
+ * registered target project, assembled from the STORED index + registry + the
+ * host environment profile. It runs nothing and modifies nothing — it just reads
+ * what previous scans/reports already produced so the UI can show overview,
+ * repo map, command summary, freshness, confidence, and known-unknowns in one
+ * place (prompt 40 req #1–#3). Heavy artifacts (full change/deploy reports) are
+ * generated on demand by their own actions, not embedded here.
+ */
+export interface TargetDashboard {
+  version: 1;
+  generatedAt: number;
+  /** Whether a stored scan exists for this target (else most sections are empty). */
+  scanned: boolean;
+  /** Registry metadata for the target (id, name, path, repo type, last scan…). */
+  project: {
+    id: string;
+    displayName: string;
+    targetPath: string;
+    repoType: "single-repo" | "multi-repo" | "unknown";
+    repos: string[];
+    lastScannedAt: number | null;
+    storageDir: string;
+    description?: string;
+  };
+  /** Overall freshness verdict (from the registry / stored grounding). */
+  freshness: FreshnessStatus | "unknown";
+  /** Confidence rollup across repos (worst-of, plus per-repo). */
+  confidence: { overall: Confidence; perRepo: { repo: string; confidence: Confidence }[] };
+  /** Known-unknowns rollup: total + by impact + a few representative titles. */
+  knownUnknowns: { total: number; byImpact: { high: number; medium: number; low: number }; top: { title: string; detail: string; impact: Confidence }[] };
+  /** Repo map: one row per repo (languages, counts, freshness, confidence). */
+  repos: {
+    name: string;
+    languages: string[];
+    gitBranch: string | null;
+    gitCommit: string | null;
+    scripts: number;
+    routes: number;
+    services: number;
+    symbols: number;
+    envVars: number;
+    deployFiles: number;
+    confidence: Confidence;
+    freshness: FreshnessStatus;
+    knownUnknowns: number;
+  }[];
+  /** Command-book summary (counts by category + a few representative commands). */
+  commands: { total: number; byCategory: { category: string; count: number }[]; sample: { repo: string; category: string; name: string; command: string; safety: string }[] };
+  /** Deployment signal summary (does NOT run the full explorer — just a peek). */
+  deployment: { hasSignals: boolean; signalFiles: string[]; note: string };
+  /** Local environment status (from the host profile), if one exists. */
+  environment: { available: boolean; osVariant?: string; shell?: string | null; toolsPresent?: string[]; toolsMissing?: string[] } | null;
+  /** A one-paragraph human summary the UI can show at the top. */
+  summary: string;
+}
