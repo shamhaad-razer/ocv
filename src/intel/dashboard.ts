@@ -98,7 +98,8 @@ export function buildDashboard(opts: DashboardOptions): TargetDashboard {
     commands = {
       total: book.entries.length,
       byCategory: [...counts.entries()].map(([category, count]) => ({ category, count })).sort((a, b) => b.count - a.count),
-      sample: book.entries.slice(0, 8).map((e) => ({ repo: e.repo, category: e.category, name: e.name, command: e.command, safety: e.safety })),
+      // Full-ish list so the UI can show the whole command book (capped for sanity).
+      sample: book.entries.slice(0, 60).map((e) => ({ repo: e.repo, category: e.category, name: e.name, command: e.command, safety: e.safety })),
     };
   }
 

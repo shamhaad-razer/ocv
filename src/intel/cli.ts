@@ -603,6 +603,7 @@ async function runEnv(args: Args, now: number): Promise<void> {
     }
     const next = applyEnvironmentOverride(profile, update, now);
     saveEnvironmentProfile(next);
+    if (args.json) { process.stdout.write(envProfileJson(next) + "\n"); return; }
     console.log(`[env] updated overrides: ${Object.keys(update).join(", ")}`);
     printProfile(next);
     return;
@@ -641,6 +642,7 @@ async function runEnv(args: Args, now: number): Promise<void> {
     profile.machine.ports = withPorts.env.ports;
   }
   saveEnvironmentProfile(profile);
+  if (args.json) { process.stdout.write(envProfileJson(profile) + "\n"); return; }
   printProfile(profile);
   console.log(`[env] profile persisted → ${environmentProfilePath()} (HOST storage — outside any target)`);
 
@@ -658,7 +660,11 @@ async function runEnv(args: Args, now: number): Promise<void> {
   }
 }
 
-/** Print the environment profile (human-readable) with safety + compatibility notes. */
+/** The JSON shape emitted by `env show/set/refresh --json` (consumed by the UI). */
+function envProfileJson(profile: EnvironmentProfile): string {
+  return JSON.stringify({ ok: true, available: true, profile, osVariant: effectiveOsVariant(profile), shell: effectiveShell(profile) });
+}
+
 function printProfile(profile: EnvironmentProfile): void {
   console.log("[env] Local environment profile (host-side — persists across sessions & projects):");
   console.log(`  OS variant   : ${effectiveOsVariant(profile)}${profile.overrides.osVariant ? " (user-set override)" : " (detected)"}`);
@@ -818,6 +824,12 @@ async function runVerify(args: Args, now: number): Promise<void> {
   mkdirSync(args.out, { recursive: true });
   writeFileSync(join(args.out, "verification.json"), JSON.stringify(merged, null, 2), "utf-8");
 
+  if (args.json) {
+    // Emit the results of THIS run (the API surfaces classification + pass/fail).
+    process.stdout.write(JSON.stringify({ ok: true, results: store.results, total: merged.results.length }) + "\n");
+    return;
+  }
+
   // Report what happened, classification-first (transparency).
   for (const r of store.results) {
     const tag = r.status === "ran" ? (r.passed === true ? "PASS" : r.passed === false ? "FAIL" : "UNKNOWN") : r.status.toUpperCase();
@@ -919,6 +931,7 @@ function runTargets(args: Args, now: number): void {
       process.exit(1);
     }
     saveRegistry(reg);
+    if (args.json) { process.stdout.write(JSON.stringify({ ok: true, removed: { id: removed.id, displayName: removed.displayName, targetPath: removed.targetPath } }) + "\n"); return; }
     console.log(`[targets] untracked: ${removed.displayName} (${removed.targetPath})`);
     console.log(`[targets] the target project was NOT deleted or modified — only removed from OpenClaw tracking.`);
     console.log(`[targets] (its host index at ${removed.storageDir} is left in place; delete it manually if you want.)`);
@@ -1061,9 +1074,12 @@ function printPreferences(prefs: UserPreferences): void {
  */
 function runPrefs(args: Args, now: number): void {
   const sub = args.subcmd ?? "show";
+  // Allowed option values surfaced to API/UI consumers (and used to validate set).
+  const options = { level: EXPERIENCE_LEVELS, style: STYLES, detail: DETAILS, risk: RISKS };
   if (sub === "reset" || args.bools.has("reset")) {
     const prefs = defaultPreferences(now);
     savePreferences(prefs);
+    if (args.json) { process.stdout.write(JSON.stringify({ ok: true, prefs, options }) + "\n"); return; }
     console.log("[prefs] reset to defaults (junior-engineer lens).");
     printPreferences(prefs);
     return;
@@ -1114,12 +1130,15 @@ function runPrefs(args: Args, now: number): void {
     }
     const next = applyPreferenceUpdate(prefs, update, now);
     savePreferences(next);
+    if (args.json) { process.stdout.write(JSON.stringify({ ok: true, prefs: next, options, updated: Object.keys(update) }) + "\n"); return; }
     console.log(`[prefs] updated: ${Object.keys(update).join(", ")}`);
     printPreferences(next);
     return;
   }
   // default: show
-  printPreferences(loadPreferences(now));
+  const prefs = loadPreferences(now);
+  if (args.json) { process.stdout.write(JSON.stringify({ ok: true, prefs, options }) + "\n"); return; }
+  printPreferences(prefs);
 }
 
 /**
@@ -1139,7 +1158,9 @@ function runMemory(args: Args, now: number): void {
   const sub = args.subcmd ?? "show";
 
   if (sub === "reset" || args.bools.has("reset")) {
-    saveProjectMemory(emptyProjectMemory(ctx.projectId, ctx.targetPath, now), memPath);
+    const empty = emptyProjectMemory(ctx.projectId, ctx.targetPath, now);
+    saveProjectMemory(empty, memPath);
+    if (args.json) { process.stdout.write(JSON.stringify(empty, null, 2) + "\n"); return; }
     console.log(`[memory] reset project memory for ${ctx.targetPath}`);
     return;
   }
@@ -1158,6 +1179,7 @@ function runMemory(args: Args, now: number): void {
     }
     const next = applyProjectMemoryUpdate(mem, update, now);
     saveProjectMemory(next, memPath);
+    if (args.json) { process.stdout.write(JSON.stringify(next, null, 2) + "\n"); return; }
     console.log(`[memory] updated: ${Object.keys(update).join(", ")}`);
     return;
   }
