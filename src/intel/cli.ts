@@ -51,6 +51,7 @@ import { explainSelection, listRepoFiles } from "./explain.js";
 import { buildContextPack } from "./contextpack.js";
 import { buildDeploymentReport } from "./deployment.js";
 import { buildDashboard } from "./dashboard.js";
+import { detectToolOpportunities } from "./tooldetect.js";
 import { buildMirrorReport } from "./mirror.js";
 import { buildChangeReport } from "./change.js";
 import { mergeVerificationStores, runVerification } from "./verify.js";
@@ -89,7 +90,7 @@ import { projectIdFor } from "./storage.js";
 import type { ContextMode, ContextPackRequest, EnvironmentProfile, ExplainRequest, KnownUnknown, MachineEnv, OsVariant, VerificationStore, WorkspaceIntel } from "./types.js";
 
 interface Args {
-  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness" | "prefs" | "memory" | "context" | "deploy" | "dashboard" | "mirror";
+  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness" | "prefs" | "memory" | "context" | "deploy" | "dashboard" | "mirror" | "tools";
   /** Resolved absolute path of the TARGET PROJECT being studied (read-only). */
   targetPath: string;
   /** Whether the user explicitly supplied --target/--root (vs the legacy default). */
@@ -137,7 +138,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets", "freshness", "prefs", "memory", "context", "deploy", "dashboard", "mirror"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
+  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets", "freshness", "prefs", "memory", "context", "deploy", "dashboard", "mirror", "tools"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const positionals: string[] = [];
@@ -1339,6 +1340,63 @@ function runDashboard(args: Args, now: number): void {
 }
 
 /**
+ * Tool Opportunity Detector (prompt 45): inspect the STORED intelligence for a
+ * registered target and PROPOSE project-specific internal tools worth building
+ * (API explorer, command dashboard, flow explorer, …). Read-only; proposals are
+ * stored in HOST storage. Never modifies or runs anything against the target.
+ *   tools suggest --target <id|name|path> [--json]
+ */
+function runTools(args: Args, now: number): void {
+  // subcmd defaults to "suggest" (the only verb for now).
+  const sub = args.subcmd ?? "suggest";
+  if (sub !== "suggest") {
+    console.error(`[tools] unknown subcommand "${sub}" — use: tools suggest --target <id|name|path>`);
+    process.exit(1);
+  }
+  const reg = loadRegistry();
+  const entry = resolveTarget(reg, args.targetExplicit ? (args.ref ?? args.targetPath) : args.targetPath)
+    ?? resolveTarget(reg, args.targetPath);
+  if (!entry) {
+    console.error(`[tools] target not found in the registry — register/scan it first (looked up \`${args.targetPath}\`).`);
+    process.exit(1);
+  }
+
+  const jsonPath = join(args.out, "project-intel.json");
+  const ws = existsSync(jsonPath) ? (JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel) : null;
+  const profile = loadEnvironmentProfile();
+  const environment = profile
+    ? {
+        available: true,
+        osVariant: effectiveOsVariant(profile),
+        shell: effectiveShell(profile),
+        toolsPresent: profile.machine.tools.filter((t) => t.available).map((t) => t.name),
+        toolsMissing: profile.machine.tools.filter((t) => !t.available).map((t) => t.name),
+      }
+    : { available: false };
+
+  const dashboard = buildDashboard({ generatedAt: now, project: entry, ws, environment });
+  const report = detectToolOpportunities({ generatedAt: now, scanVersion: SCAN_VERSION, dashboard, ws });
+
+  // Persist proposals to HOST storage (never inside the target).
+  const storage = new ProjectStorage(args.out, args.local);
+  storage.writeJson("toolProposals", report);
+
+  if (args.json) {
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    return;
+  }
+  console.error(`[tools] ${entry.displayName} (${entry.id}) — ${report.proposals.length} proposal(s), confidence=${report.confidence}, freshness=${report.freshness}`);
+  console.log(report.summary);
+  for (const p of report.proposals) {
+    console.log(`\n• ${p.title}  [${p.type}] (${p.confidence}, ${p.interactivity}${p.requiresConfirmation ? ", needs-confirm" : ""})`);
+    console.log(`  why:  ${p.whyUseful}`);
+    console.log(`  for:  ${p.userProblem}`);
+    console.log(`  data: ${p.requiredDataSources.join(", ")}`);
+  }
+  console.error(`[tools] wrote ${storage.path("toolProposals")} (HOST storage — target not modified)`);
+}
+
+/**
  * Resolve a "repo selector" — a ref (registered id/name/path) + an optional repo
  * name within a multi-repo target — into a scanned RepoIntel (READ-ONLY). Prefers
  * a stored index; falls back to scanning the path live if none exists. Returns
@@ -1440,6 +1498,7 @@ async function main(): Promise<void> {
   else if (args.cmd === "deploy") runDeploy(args, now);
   else if (args.cmd === "dashboard") runDashboard(args, now);
   else if (args.cmd === "mirror") runMirror(args, now);
+  else if (args.cmd === "tools") runTools(args, now);
   else await runScan(args, now);
 }
 

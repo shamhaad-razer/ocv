@@ -1100,3 +1100,84 @@ export interface MirrorReport {
   /** Counts by intent + a one-paragraph human summary. */
   summary: string;
 }
+
+// ----- Tool Opportunity Detector (11-...md, prompt 45) -----
+
+/** The kinds of internal tool OpenClaw can PROPOSE for a target (11-...md §0). */
+export type ToolType =
+  | "api-explorer"
+  | "route-explorer"
+  | "service-map-viewer"
+  | "command-dashboard"
+  | "setup-checker"
+  | "deployment-explorer"
+  | "env-var-explorer"
+  | "flow-explorer"
+  | "change-impact-viewer"
+  | "test-runner-guide"
+  | "service-health-dashboard"
+  | "known-unknowns-tracker"
+  | "repo-mirroring-panel";
+
+/** How the proposed tool would render/behave (req #4). */
+export type ToolInteractivity = "static" | "interactive" | "runtime-assisted";
+
+/**
+ * One proposed project-specific internal tool (prompt 45). It is a PROPOSAL only —
+ * a grounded suggestion of a view worth building over the EXISTING intelligence,
+ * never generated code and never run against the target. Carries the full honesty
+ * spine (evidence/confidence/freshness/known-unknowns/safety).
+ */
+export interface ToolProposal {
+  /** Stable id: `tool:<type>:<projectId>`. */
+  id: string;
+  title: string;
+  description: string;
+  /** The registered target project this proposal is for. */
+  targetProjectId: string;
+  type: ToolType;
+  /** Why this tool is useful for THIS project (grounded in the evidence). */
+  whyUseful: string;
+  /** The concrete user problem it solves. */
+  userProblem: string;
+  /** Which stored intelligence the tool would render (no new computation). */
+  requiredDataSources: string[];
+  /** Source-grounded evidence the proposal rests on (counts + refs). */
+  evidence: SourceRef[];
+  confidence: Confidence;
+  freshness: FreshnessStatus | "unknown";
+  /** What the proposal is honest about NOT knowing. */
+  knownUnknowns: KnownUnknown[];
+  /** Safety class for any actions the tool could take (mirrors verify.ts). */
+  safety: "safe-auto" | "confirm-required" | "blocked";
+  /** Whether the tool would need runtime checks (e.g. polling /health, running tests). */
+  requiresRuntimeChecks: boolean;
+  /** Whether using the tool requires explicit user confirmation. */
+  requiresConfirmation: boolean;
+  interactivity: ToolInteractivity;
+  /** Relative priority for ranking (higher = propose first). Internal. */
+  score: number;
+}
+
+/**
+ * The full set of tool opportunities detected for one target (prompt 45). Stored
+ * in HOST storage; never written into the target.
+ */
+export interface ToolOpportunityReport {
+  version: 1;
+  generatedAt: number;
+  scanVersion: string;
+  targetProjectId: string;
+  targetPath: string;
+  /** Whether a stored scan existed to analyze (else only the fallback is offered). */
+  scanned: boolean;
+  /** Ranked proposals (highest-value first). */
+  proposals: ToolProposal[];
+  /** Overall confidence = the best-supported proposal's (or low if only the fallback). */
+  confidence: Confidence;
+  freshness: FreshnessStatus | "unknown";
+  /** Gaps the detector itself is honest about. */
+  knownUnknowns: KnownUnknown[];
+  /** One-paragraph human summary. */
+  summary: string;
+}
