@@ -20,7 +20,7 @@ function resolveToken(cfg) {
   return resolveChannelConfig(cfg)?.token || process.env.CLOUD_RELAY_TOKEN || "";
 }
 function resolveRelayUrl(cfg) {
-  const raw = resolveChannelConfig(cfg)?.relayUrl || DEFAULT_RELAY_URL;
+  const raw = resolveChannelConfig(cfg)?.relayUrl || process.env.CLOUD_RELAY_URL || DEFAULT_RELAY_URL;
   return raw.replace(/\/_tunnel$/, "").replace(/^wss:/, "https:").replace(/^ws:/, "http:");
 }
 function normalizeAgentId(value) {

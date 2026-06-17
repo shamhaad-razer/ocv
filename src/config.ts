@@ -15,7 +15,13 @@ export function resolveToken(cfg: Record<string, unknown>): string {
 }
 
 export function resolveRelayUrl(cfg: Record<string, unknown>): string {
-  const raw = (resolveChannelConfig(cfg)?.relayUrl as string) || DEFAULT_RELAY_URL;
+  // Precedence: explicit channel config → CLOUD_RELAY_URL env (lets a local dev
+  // runner point the plugin at a local relay without editing global config) →
+  // the production default.
+  const raw =
+    (resolveChannelConfig(cfg)?.relayUrl as string) ||
+    process.env.CLOUD_RELAY_URL ||
+    DEFAULT_RELAY_URL;
   return raw
     .replace(/\/_tunnel$/, "")
     .replace(/^wss:/, "https:")
