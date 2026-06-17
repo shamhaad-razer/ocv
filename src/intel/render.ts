@@ -7,6 +7,7 @@
 import type {
   ChangeConfidenceReport,
   Confidence,
+  DeploymentReport,
   Finding,
   FlowMap,
   FreshnessStatus,
@@ -14,6 +15,7 @@ import type {
   KnownUnknown,
   MachineEnv,
   RepoChangeReport,
+  RepoDeployment,
   RepoIntel,
   VerificationStore,
   WorkspaceDiff,
@@ -482,4 +484,119 @@ export function renderFlowMapMarkdown(flow: FlowMap): string {
 
 function mermaidId(s: string): string {
   return s.replace(/[^A-Za-z0-9_]/g, "_");
+}
+
+// ---------- Deployment Explorer (prompt 38) ----------
+
+/** Render the deployment report as honest, evidence-linked Markdown + a diagram. */
+export function renderDeploymentReportMarkdown(report: DeploymentReport): string {
+  const lines: string[] = [];
+  lines.push("# Deployment Report (generated)");
+  lines.push("");
+  lines.push("> **Source-grounded where it cites a file; INFERRED where it says so.**");
+  lines.push("> This reads declared config only — it does **NOT** observe the live");
+  lines.push("> production deployment (running replicas, cluster, scaling). Where");
+  lines.push("> production is unknown, it says so rather than guessing.");
+  lines.push(`> target: \`${report.targetPath}\` · generated: \`${isoUtc(report.generatedAt)}\` · scan version: \`${report.scanVersion}\``);
+  lines.push(`> overall confidence: ${confBadge(report.confidence)} · freshness: ${freshBadge(report.freshness)} · ${report.multiRepo ? "multi-repo" : "single-repo"}`);
+  lines.push("");
+
+  lines.push("## Summary");
+  lines.push(report.summary);
+  lines.push("");
+
+  for (const r of report.repos) {
+    lines.push(renderRepoDeployment(r));
+    lines.push("---");
+    lines.push("");
+  }
+
+  if (report.multiRepo) {
+    lines.push("## Cross-repo deployment coupling (INFERRED — not a verified production topology)");
+    if (report.crossRepoLinks.length === 0) {
+      lines.push("_no cross-repo deploy coupling inferred from source signals_");
+    } else {
+      for (const l of report.crossRepoLinks) {
+        lines.push(`- \`${l.from}\` ⇄ \`${l.to}\` — **${l.kind}** via ${l.via} (${confBadge(l.confidence)}) · evidence: ${l.sources.map((s) => `\`${s.locator ?? s.ref}\``).join(", ") || "—"}`);
+      }
+    }
+    lines.push("");
+  }
+
+  // The honesty triad.
+  lines.push("## What is source-grounded");
+  lines.push(report.sourceGrounded.length ? report.sourceGrounded.map((s) => `- ${s}`).join("\n") : "_none_");
+  lines.push("");
+  lines.push("## What is inferred");
+  lines.push(report.inferred.length ? report.inferred.map((s) => `- ${s}`).join("\n") : "_none_");
+  lines.push("");
+  lines.push("## What is unknown");
+  lines.push(report.unknown.map((s) => `- ${s}`).join("\n"));
+  lines.push("");
+
+  if (report.diagram) {
+    lines.push("## Deployment diagram");
+    lines.push("```mermaid");
+    lines.push(report.diagram);
+    lines.push("```");
+    lines.push("> Diagram is built from detected services + INFERRED runtime deps — verify before relying.");
+    lines.push("");
+  } else {
+    lines.push("## Deployment diagram");
+    lines.push("_not enough deployment evidence to draw a diagram_");
+    lines.push("");
+  }
+
+  lines.push("## Known unknowns");
+  lines.push(renderUnknowns(report.knownUnknowns));
+  lines.push("");
+  return lines.join("\n");
+}
+
+function renderRepoDeployment(r: RepoDeployment): string {
+  const lines: string[] = [];
+  lines.push(`## \`${r.repo}\` — ${r.model}`);
+  lines.push(`- confidence: ${confBadge(r.confidence)} · freshness: ${freshBadge(r.freshness)} · ${r.signals.length} signal(s)`);
+  lines.push("");
+
+  if (r.services.length) {
+    lines.push("### Service boundaries");
+    for (const s of r.services) lines.push(`- \`${s.name}\` (${s.kind})${s.ports.length ? ` — port(s) ${s.ports.join(", ")}` : ""} · evidence: \`${s.evidence}\``);
+    lines.push("");
+  }
+
+  lines.push("### Detected deployment signals");
+  if (r.signals.length === 0) {
+    lines.push("_no deployment-related files detected in this repo_");
+  } else {
+    lines.push("| source file | type | ports | env | commands | confidence |");
+    lines.push("|---|---|---|---|---|---|");
+    for (const s of r.signals) {
+      lines.push(
+        `| \`${s.sourceFile}\` | ${s.type} | ${s.ports.join(", ") || "—"} | ${s.envVars.length} | ${s.commands.length} | ${confBadge(s.confidence)} |`,
+      );
+    }
+  }
+  lines.push("");
+
+  if (r.requiredEnvVars.length) {
+    lines.push("### Required env vars (names only — values never read, S6)");
+    lines.push(r.requiredEnvVars.map((e) => `\`${e}\``).join(", "));
+    lines.push("");
+  }
+
+  if (r.commands.length) {
+    lines.push("### Build / run / deploy commands (detected — NOT run)");
+    for (const c of r.commands) lines.push(`- **${c.category}**: \`${c.command}\` · from \`${c.source}\``);
+    lines.push("");
+  }
+
+  if (r.runtimeDependencies.length) {
+    lines.push("### Runtime dependencies (INFERRED — heuristic)");
+    for (const d of r.runtimeDependencies) {
+      lines.push(`- → ${d.to} (${d.kind}, ${d.required ? "required" : "optional"}, ${confBadge(d.confidence)}) · via ${d.via}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
 }

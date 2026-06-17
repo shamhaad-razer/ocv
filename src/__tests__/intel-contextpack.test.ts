@@ -135,4 +135,12 @@ describe("buildContextPack", () => {
     expect(pack.guidance.level).toBe("senior");
     expect(pack.summary).toMatch(/senior engineer/);
   });
+
+  it("deployment mode folds in the deployment report (signals + production-unknown)", () => {
+    const pack = buildContextPack({ projectId: projectIdFor(root), question: "how is this deployed?", repo, mode: "deployment" }, ws, { generatedAt: NOW, guidance: GUIDANCE, maxItems: 30 });
+    // the Dockerfile signal surfaces as a deploy-file item
+    expect(pack.items.some((i) => i.kind === "deploy-file" && /dockerfile/i.test(i.label))).toBe(true);
+    // and the honesty: production deployment is flagged unknown
+    expect(pack.items.some((i) => i.kind === "known-unknown" && /production deployment/i.test(i.label))).toBe(true);
+  });
 });

@@ -60,6 +60,8 @@ export const ARTIFACTS = {
   changeReportMd: "change-report.md",
   verification: "verification.json",
   contextPack: "context-pack.json",
+  deploymentJson: "deployment-report.json",
+  deploymentMd: "deployment-report.md",
   docsDir: "docs",
   reportHistoryDir: "report-history",
   contextHistoryDir: "context-history",

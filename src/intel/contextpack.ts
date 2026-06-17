@@ -21,6 +21,7 @@
 
 import { explainSelection, listRepoFiles } from "./explain.js";
 import { buildCommandBook } from "./onboarding.js";
+import { buildDeploymentReport } from "./deployment.js";
 import { flowForRepo } from "./flowmap.js";
 import type { Guidance } from "./memory.js";
 import type {
@@ -275,6 +276,39 @@ export function buildContextPack(req: ContextPackRequest, ws: WorkspaceIntel, op
         mk("flow-edge", `${e.from} → ${e.to} (${e.kind})`, e.label, "inferred cross-repo relationship", e.evidence, e.confidence, "unverified", 2),
       );
     }
+  }
+
+  // --- deployment context (prompt 38): in deployment mode, fold in the detected
+  // deployment signals + inferred runtime deps + the honest unknown so the pack
+  // can answer "how is this deployed?" without the user attaching configs. ---
+  if (mode === "deployment") {
+    const dep = buildDeploymentReport(ws, { generatedAt: now });
+    const scope = repo ? dep.repos.filter((r) => r.repo === repo.name) : dep.repos;
+    for (const rd of scope) {
+      for (const s of rd.signals.slice(0, 8)) {
+        candidates.push(
+          mk(
+            "deploy-file",
+            `${s.type}: ${s.sourceFile}`,
+            s.summary + (s.ports.length ? ` · ports ${s.ports.join(", ")}` : "") + (s.commands.length ? ` · e.g. \`${s.commands[0]}\`` : ""),
+            "a detected deployment signal",
+            s.sources,
+            s.confidence,
+            s.freshness,
+            PRIORITY_BOOST + 5,
+          ),
+        );
+      }
+      for (const d of rd.runtimeDependencies.slice(0, 6)) {
+        candidates.push(
+          mk("flow-edge", `runtime dep → ${d.to}`, `${rd.repo} likely needs ${d.to} (${d.kind}, via ${d.via})`, "inferred runtime dependency for deployment", d.sources, d.confidence, "unverified", PRIORITY_BOOST + 2),
+        );
+      }
+    }
+    // The headline honesty for deployment: production topology is unknown.
+    candidates.push(
+      mk("known-unknown", "production deployment", dep.unknown[0] ?? "Live production topology is not observable from source.", "deployment configs ≠ live deployment", [{ kind: "intel-entity", ref: "deploy:unknown" }], "low", "unverified", PRIORITY_BOOST + 1),
+    );
   }
 
   // --- workspace-level known unknowns (always honest about gaps) ---

@@ -35,13 +35,14 @@ import {
 import { detectMachineEnv } from "./env.js";
 import { explainSelection, listRepoFiles } from "./explain.js";
 import { buildContextPack } from "./contextpack.js";
+import { buildDeploymentReport } from "./deployment.js";
 import { buildChangeReport } from "./change.js";
 import { mergeVerificationStores, runVerification } from "./verify.js";
 import { renderMachineEnv, renderChangeReportMarkdown } from "./render.js";
 import { ProjectStorage, hostStorageDir } from "./storage.js";
 import { computeFreshness } from "./freshness.js";
 import { buildFlowMap } from "./flowmap.js";
-import { renderFlowMapMarkdown } from "./render.js";
+import { renderFlowMapMarkdown, renderDeploymentReportMarkdown } from "./render.js";
 import {
   loadRegistry,
   recordScan,
@@ -72,7 +73,7 @@ import { projectIdFor } from "./storage.js";
 import type { ContextMode, ContextPackRequest, ExplainRequest, KnownUnknown, VerificationStore, WorkspaceIntel } from "./types.js";
 
 interface Args {
-  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness" | "prefs" | "memory" | "context";
+  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness" | "prefs" | "memory" | "context" | "deploy";
   /** Resolved absolute path of the TARGET PROJECT being studied (read-only). */
   targetPath: string;
   /** Whether the user explicitly supplied --target/--root (vs the legacy default). */
@@ -120,7 +121,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets", "freshness", "prefs", "memory", "context"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
+  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets", "freshness", "prefs", "memory", "context", "deploy"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const positionals: string[] = [];
@@ -1078,6 +1079,43 @@ function runContext(args: Args, now: number): void {
   process.stdout.write(JSON.stringify(pack, null, 2) + "\n");
 }
 
+/**
+ * Deployment Explorer (prompt 38): detect deployment signals from a registered
+ * target and explain how it's deployed (or might be) — current model, service
+ * boundaries, runtime deps, env vars, build/run/deploy commands, a Mermaid
+ * diagram, and an explicit source-grounded / inferred / unknown split. Writes
+ * deployment-report.{md,json} to HOST storage. READ-ONLY w.r.t. the target.
+ *   deploy --target <id|name|path> [--json]
+ */
+function runDeploy(args: Args, now: number): void {
+  const jsonPath = join(args.out, "project-intel.json");
+  if (!existsSync(jsonPath)) {
+    console.error(`[deploy] no scan at ${jsonPath} for \`${args.targetPath}\` — run \`scan --target <path>\` first`);
+    process.exit(1);
+  }
+  const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
+  const report = buildDeploymentReport(ws, { generatedAt: now });
+
+  if (args.json) {
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    return;
+  }
+
+  // Write the report (md + json) to HOST storage — never inside the target.
+  const storage = new ProjectStorage(args.out, args.local);
+  const md = renderDeploymentReportMarkdown(report);
+  storage.writeText("deploymentMd", md);
+  storage.writeJson("deploymentJson", report);
+
+  const totalSignals = report.repos.reduce((n, r) => n + r.signals.length, 0);
+  console.error(
+    `[deploy] ${report.repos.length} repo(s), ${totalSignals} signal(s)${report.crossRepoLinks.length ? `, ${report.crossRepoLinks.length} cross-repo link(s)` : ""} → confidence=${report.confidence}, freshness=${report.freshness}`,
+  );
+  console.error(`[deploy] ${report.summary}`);
+  console.error(`[deploy] wrote ${storage.path("deploymentMd")} + ${storage.path("deploymentJson")}`);
+  process.stdout.write(md + "\n");
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now(); // injected here at the edge ONLY
@@ -1093,6 +1131,7 @@ async function main(): Promise<void> {
   else if (args.cmd === "prefs") runPrefs(args, now);
   else if (args.cmd === "memory") runMemory(args, now);
   else if (args.cmd === "context") runContext(args, now);
+  else if (args.cmd === "deploy") runDeploy(args, now);
   else await runScan(args, now);
 }
 

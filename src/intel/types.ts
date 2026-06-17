@@ -787,3 +787,126 @@ export interface ContextPack {
   /** A one-paragraph human-readable preamble the LLM can read first. */
   summary: string;
 }
+
+// ----- Deployment Explorer (09-...md, prompt 38) -----
+
+/** The kind of deployment signal a file represents (09-...md §0/§1). */
+export type DeploymentSignalType =
+  | "dockerfile"
+  | "compose"
+  | "kubernetes"
+  | "github-actions"
+  | "gitlab-ci"
+  | "jenkins"
+  | "bitbucket-pipelines"
+  | "cicd-config"
+  | "package-script"
+  | "makefile"
+  | "deploy-script"
+  | "env-example"
+  | "readme-deploy"
+  | "cloud-config";
+
+/**
+ * One detected deployment signal + everything extracted from it (prompt 38 req #2).
+ * Source-grounded (every signal cites its file) and confidence/freshness-scored.
+ */
+export interface DeploymentSignal {
+  /** Repo-relative source file the signal came from. */
+  sourceFile: string;
+  type: DeploymentSignalType;
+  /** The repo (in a multi-repo workspace) this signal belongs to. */
+  repo: string;
+  /** Optional service/component name the signal targets (e.g. compose service). */
+  service?: string;
+  /** Build/run/deploy commands extracted from the signal (raw, never executed). */
+  commands: string[];
+  /** Env var NAMES referenced (never values — S6). */
+  envVars: string[];
+  /** Ports exposed/mapped, if detected. */
+  ports: number[];
+  /** Runtime/image/service dependencies named in the signal (e.g. base image, compose deps). */
+  dependencies: string[];
+  /** A one-line human summary of what the signal says. */
+  summary: string;
+  confidence: Confidence;
+  freshness: FreshnessStatus;
+  /** Source references (file / file:line). */
+  sources: SourceRef[];
+  /** What this signal does NOT tell us (e.g. "compose is test infra, not prod"). */
+  knownUnknownIds: string[];
+}
+
+/** An inferred runtime dependency between a service and a peer (09-...md §2). Heuristic. */
+export interface RuntimeDependency {
+  /** The repo/service that has the dependency. */
+  from: string;
+  /** The dependency target (e.g. "postgres", "service-voice", an external API host). */
+  to: string;
+  kind: "datastore" | "internal-service" | "external-api" | "message-queue" | "unknown";
+  /** How it was inferred (env var name, compose link, url). */
+  via: string;
+  /** Whether it looks required vs optional (heuristic). */
+  required: boolean;
+  confidence: Confidence;
+  sources: SourceRef[];
+}
+
+/** The deployment picture for one repo within the workspace. */
+export interface RepoDeployment {
+  repo: string;
+  /** One-line characterization of how this repo appears to deploy. */
+  model: string;
+  signals: DeploymentSignal[];
+  /** Inferred runtime dependencies for this repo's services. */
+  runtimeDependencies: RuntimeDependency[];
+  /** Service boundaries (name + ports + kind) drawn from the index. */
+  services: { name: string; kind: string; ports: number[]; evidence: string }[];
+  /** Union of env var names across this repo's deployment signals. */
+  requiredEnvVars: string[];
+  /** Union of build/run/deploy commands across signals. */
+  commands: { category: "build" | "run" | "deploy" | "other"; command: string; source: string }[];
+  confidence: Confidence;
+  freshness: FreshnessStatus;
+  knownUnknowns: KnownUnknown[];
+}
+
+/**
+ * The full deployment report for a (possibly multi-repo) target (prompt 38 §3).
+ * Honest: separates source-grounded facts from inferred topology, and says when
+ * production deployment is unknown. Read-only; never modifies the target.
+ */
+export interface DeploymentReport {
+  version: 1;
+  generatedAt: number;
+  scanVersion: string;
+  targetPath: string;
+  /** Whether the index covers >1 repo. */
+  multiRepo: boolean;
+  /** Per-repo deployment pictures. */
+  repos: RepoDeployment[];
+  /** Cross-repo deployment coupling (multi-repo only) — inferred, never invented. */
+  crossRepoLinks: {
+    from: string;
+    to: string;
+    /** What suggested the link (shared env var / port / package / compose). */
+    via: string;
+    /** "runtime-coupled" = talk at runtime; "co-deployed" = ship together; "independent" = separate. */
+    kind: "runtime-coupled" | "co-deployed" | "shared-config" | "independent";
+    confidence: Confidence;
+    sources: SourceRef[];
+  }[];
+  /** What's source-grounded (facts read directly from files). */
+  sourceGrounded: string[];
+  /** What's inferred (heuristic — runtime deps, coupling). */
+  inferred: string[];
+  /** What's unknown (esp. production topology — never fabricated). */
+  unknown: string[];
+  /** A Mermaid diagram of the deployment topology (empty string if too little evidence). */
+  diagram: string;
+  confidence: Confidence;
+  freshness: FreshnessStatus;
+  knownUnknowns: KnownUnknown[];
+  /** One-paragraph human summary. */
+  summary: string;
+}
