@@ -510,6 +510,12 @@ export interface ExplainPackage {
   knownUnknowns: KnownUnknown[];
   /** Concrete next checks that would raise confidence (13-...md §7). */
   suggestedFollowups: string[];
+  /**
+   * The remembered presentation guidance applied to this explanation (prompt 36),
+   * surfaced for transparency: which level + the exact guidance lines used. Absent
+   * when no memory/preferences were supplied.
+   */
+  appliedGuidance?: { level: ExplainRequest["experienceLevel"]; lines: string[] };
   grounding: Grounding;
 }
 

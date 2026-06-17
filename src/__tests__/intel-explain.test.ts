@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { scanRepo } from "../intel/scanner.js";
 import { explainSelection, listRepoFiles } from "../intel/explain.js";
+import { applyPreferenceUpdate, buildGuidance, defaultPreferences } from "../intel/memory.js";
 import { SCAN_VERSION } from "../intel/grounding.js";
 import type { WorkspaceIntel } from "../intel/types.js";
 
@@ -164,5 +165,28 @@ describe("explainSelection", () => {
     expect(pkg.explanation).toMatch(/You asked: "what does this do\?"/);
     expect(pkg.explanation).toMatch(/Direct callers are \*\*not yet known\*\*/);
     expect(pkg.explanation).toMatch(/Next, inspect/);
+  });
+
+  it("applies remembered guidance: a once-set junior lens is used without re-stating it (prompt 36)", () => {
+    const guidance = buildGuidance(defaultPreferences(FIXED_NOW)); // junior by default
+    const pkg = explainSelection(
+      { repo: repoName, path: "src/server.ts", startLine: 4, endLine: 6 }, // NO experienceLevel on the request
+      ws,
+      { generatedAt: FIXED_NOW, repoFiles: listRepoFiles(root), guidance },
+    );
+    // the guidance level was applied + surfaced transparently
+    expect(pkg.appliedGuidance?.level).toBe("junior");
+    expect(pkg.explanation).toMatch(/Presented for a junior engineer per your saved preferences/);
+  });
+
+  it("a senior lens changes the surfaced presentation (preferences drive it)", () => {
+    const guidance = buildGuidance(applyPreferenceUpdate(defaultPreferences(FIXED_NOW), { explanationLevel: "senior" }, FIXED_NOW));
+    const pkg = explainSelection(
+      { repo: repoName, path: "src/server.ts", startLine: 4, endLine: 6 },
+      ws,
+      { generatedAt: FIXED_NOW, repoFiles: listRepoFiles(root), guidance },
+    );
+    expect(pkg.appliedGuidance?.level).toBe("senior");
+    expect(pkg.explanation).toMatch(/Presented for a senior engineer/);
   });
 });

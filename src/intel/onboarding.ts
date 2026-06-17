@@ -10,6 +10,7 @@
 // These are GENERATED ARTIFACTS, not hand-authored truth — the rendered headers
 // say so, and every section degrades honestly when evidence is absent.
 
+import type { Guidance } from "./memory.js";
 import type {
   CommandBook,
   CommandBookEntry,
@@ -310,7 +311,7 @@ export function renderRepoOnboarding(repo: RepoIntel): string {
 
 // ---------- multi-repo overview ----------
 
-export function renderOverview(ws: WorkspaceIntel): string {
+export function renderOverview(ws: WorkspaceIntel, guidance?: Guidance): string {
   const lines: string[] = [];
   lines.push("# Multi-Repo Onboarding Overview (generated)");
   lines.push("");
@@ -318,7 +319,16 @@ export function renderOverview(ws: WorkspaceIntel): string {
   lines.push("> after changes. Cross-repo runtime wiring is NOT yet mapped (see gaps).");
   lines.push(`> target project: \`${ws.targetPath ?? ws.rootPath}\``);
   lines.push(`> generated: \`${isoUtc(ws.generatedAt)}\` · scan version: \`${ws.scanVersion}\``);
+  // Remembered presentation preferences (prompt 36) — shown so onboarding adapts
+  // to the user (junior by default) and the applied lens is transparent.
+  if (guidance) {
+    lines.push(`> presented for: **${guidance.level}** engineer (your saved preference — change with \`prefs set\`)`);
+  }
   lines.push("");
+  if (guidance) {
+    lines.push("> _Reading guidance:_ " + guidance.lines.slice(0, 3).join(" "));
+    lines.push("");
+  }
 
   lines.push("## Repos at a glance");
   lines.push("| repo | languages | install? | run? | test? | build? | freshness |");

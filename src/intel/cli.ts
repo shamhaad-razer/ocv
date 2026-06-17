@@ -50,10 +50,28 @@ import {
   upsertTarget,
   validateTargetPath,
 } from "./registry.js";
+import {
+  applyPreferenceUpdate,
+  applyProjectMemoryUpdate,
+  buildGuidance,
+  defaultPreferences,
+  emptyProjectMemory,
+  loadPreferences,
+  loadProjectMemory,
+  preferencesPath,
+  projectMemoryPath,
+  savePreferences,
+  saveProjectMemory,
+  type ExperienceLevel,
+  type PreferenceUpdate,
+  type ProjectMemoryUpdate,
+  type UserPreferences,
+} from "./memory.js";
+import { projectIdFor } from "./storage.js";
 import type { ExplainRequest, KnownUnknown, VerificationStore, WorkspaceIntel } from "./types.js";
 
 interface Args {
-  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness";
+  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness" | "prefs" | "memory";
   /** Resolved absolute path of the TARGET PROJECT being studied (read-only). */
   targetPath: string;
   /** Whether the user explicitly supplied --target/--root (vs the legacy default). */
@@ -88,14 +106,18 @@ interface Args {
   /** targets add: display name + description. */
   name?: string;
   desc?: string;
+  /** Raw flag map (for prefs/memory which accept many ad-hoc keys). */
+  flags: Map<string, string>;
+  /** Raw bool flags (e.g. --reset). */
+  bools: Set<string>;
 }
 
 function parseArgs(argv: string[]): Args {
-  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets", "freshness"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
+  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets", "freshness", "prefs", "memory"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const positionals: string[] = [];
-  const VALUELESS = new Set(["no-write", "confirm", "local", "json"]);
+  const VALUELESS = new Set(["no-write", "confirm", "local", "json", "reset", "analogies", "no-analogies", "diagrams", "no-diagrams"]);
   for (let i = 1; i < argv.length; i++) {
     if (argv[i].startsWith("--")) {
       const key = argv[i].slice(2);
@@ -156,6 +178,8 @@ function parseArgs(argv: string[]): Args {
     ref: positionals[1],
     name: flags.get("name") || undefined,
     desc: flags.get("desc") || undefined,
+    flags,
+    bools,
   };
 }
 
@@ -311,7 +335,7 @@ async function runScan(args: Args, now: number): Promise<void> {
   }
 
   // Generate onboarding docs + command book from the same grounded index.
-  writeOnboardingDocs(ws, args.out);
+  writeOnboardingDocs(ws, args.out, now);
 
   // Auto-register / refresh this target in the HOST registry (never touches the
   // target — only host metadata). Records repo type, commits, unknowns, time.
@@ -374,11 +398,13 @@ function registerScannedTarget(args: Args, ws: WorkspaceIntel, now: number): voi
 }
 
 /** Generate the onboarding artifacts (overview, per-repo, command book) into a docs/ subdir. */
-function writeOnboardingDocs(ws: WorkspaceIntel, out: string): void {
+function writeOnboardingDocs(ws: WorkspaceIntel, out: string, now: number): void {
   const docsDir = join(out, "docs");
   mkdirSync(docsDir, { recursive: true });
 
-  writeFileSync(join(docsDir, "onboarding-overview.md"), renderOverview(ws), "utf-8");
+  // Onboarding adapts to the user's remembered preferences (junior by default).
+  const guidance = buildGuidance(loadPreferences(now));
+  writeFileSync(join(docsDir, "onboarding-overview.md"), renderOverview(ws, guidance), "utf-8");
   for (const repo of ws.repos) {
     writeFileSync(join(docsDir, `onboarding-${repo.name}.md`), renderRepoOnboarding(repo), "utf-8");
   }
@@ -455,14 +481,14 @@ function runDiff(args: Args): void {
 }
 
 /** Regenerate onboarding docs from the LAST scan without re-scanning the repos. */
-function runDocs(args: Args): void {
+function runDocs(args: Args, now: number): void {
   const jsonPath = join(args.out, "project-intel.json");
   if (!existsSync(jsonPath)) {
     console.error(`[docs] no scan at ${jsonPath} — run \`scan\` first`);
     process.exit(1);
   }
   const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
-  writeOnboardingDocs(ws, args.out);
+  writeOnboardingDocs(ws, args.out, now);
 }
 
 /**
@@ -487,7 +513,7 @@ async function runEnv(args: Args, now: number): Promise<void> {
     ws.knownUnknowns = ws.knownUnknowns.filter((u) => u.kind !== "missing-tool" && u.kind !== "unverified-port").concat(unknowns);
     writeFileSync(jsonPath, JSON.stringify(ws, null, 2), "utf-8");
     writeFileSync(join(args.out, "project-map.md"), renderWorkspaceMarkdown(ws), "utf-8");
-    writeOnboardingDocs(ws, args.out);
+    writeOnboardingDocs(ws, args.out, now);
     console.log(`[env] merged environment into ${jsonPath} + regenerated docs`);
   } else {
     console.log(`[env] no prior scan to merge into — run \`scan\` to persist environment + compatibility`);
@@ -517,7 +543,12 @@ function runExplain(args: Args, now: number): void {
   const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
   const repo = ws.repos.find((r) => r.name === req.repo);
   const repoFiles = repo ? listRepoFiles(repo.rootPath) : [];
-  const pkg = explainSelection(req, ws, { generatedAt: now, repoFiles });
+  // Apply remembered preferences (global) + per-project memory so a once-set
+  // "junior" lens is used automatically without re-stating it (prompt 36).
+  const guidance = guidanceFor(args, now);
+  // Remember that the user inspected this file (curated project memory).
+  rememberInspectedFile(args, now, req.path, req.intent);
+  const pkg = explainSelection(req, ws, { generatedAt: now, repoFiles, guidance });
   // Print the structured package for a future frontend; stderr carries a 1-line summary.
   console.error(
     `[explain] ${req.repo}/${req.path}:${req.startLine}-${req.endLine} → confidence=${pkg.confidence}, freshness=${pkg.freshness}${pkg.staleWarning ? " (STALE)" : ""}`,
@@ -550,7 +581,10 @@ function runReport(args: Args, now: number): void {
   const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
   // Fold in any prior verification results so the report reflects runtime evidence.
   const verification = loadVerificationStore(args.out);
-  const report = buildChangeReport(ws, { generatedAt: now, verification });
+  // Apply the user's remembered risk-tolerance to the verdict FRAMING only — the
+  // honesty rule (never "safe to push") is unchanged (prompt 36).
+  const prefs = loadPreferences(now);
+  const report = buildChangeReport(ws, { generatedAt: now, verification, riskTolerance: prefs.riskTolerance });
 
   // Write the "latest" report + append an immutable copy to per-target history.
   const storage = new ProjectStorage(args.out, args.local);
@@ -769,18 +803,199 @@ function runFreshness(args: Args): void {
   console.log(`[freshness] stored intelligence is fresh.`);
 }
 
+// ---------------------------------------------------------------------------
+// Persistent memory & personalization (prompt 36)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the registered/target entry for the current args, if any, so per-project
+ * memory can be loaded. Returns null when no target is registered/scanned yet.
+ */
+function resolveProjectMemoryContext(args: Args, now: number): { projectId: string; targetPath: string } | null {
+  // Only meaningful when we have a real target path (explicit or resolvable).
+  if (!args.targetExplicit && !existsSync(join(args.out, "project-intel.json"))) return null;
+  const targetPath = args.targetPath;
+  return { projectId: projectIdFor(targetPath), targetPath };
+}
+
+/** Assemble guidance from global prefs + this target's project memory (prompt 36). */
+function guidanceFor(args: Args, now: number) {
+  const prefs = loadPreferences(now);
+  const ctx = resolveProjectMemoryContext(args, now);
+  const mem = ctx ? loadProjectMemory(ctx.targetPath, ctx.projectId, now) : null;
+  return buildGuidance(prefs, mem);
+}
+
+/** Curate "the user inspected this file" into project memory (host-only, capped). */
+function rememberInspectedFile(args: Args, now: number, path: string, intent?: string): void {
+  const ctx = resolveProjectMemoryContext(args, now);
+  if (!ctx) return;
+  const memPath = projectMemoryPath(ctx.targetPath);
+  const mem = loadProjectMemory(ctx.targetPath, ctx.projectId, now, memPath);
+  const update: ProjectMemoryUpdate = { addInspectedFile: path };
+  if (intent) update.addQuestion = intent;
+  saveProjectMemory(applyProjectMemoryUpdate(mem, update, now), memPath);
+}
+
+const EXPERIENCE_LEVELS: ExperienceLevel[] = ["new-to-repo", "junior", "mid", "senior"];
+const STYLES: UserPreferences["style"][] = ["clear-step-by-step", "flow-oriented", "concise", "reference"];
+const DETAILS: UserPreferences["detail"][] = ["brief", "balanced", "thorough"];
+const RISKS: UserPreferences["riskTolerance"][] = ["cautious", "balanced", "pragmatic"];
+
+function printPreferences(prefs: UserPreferences): void {
+  console.log("[prefs] Global user preferences (apply to every project; project memory can add context):");
+  console.log(`  explanation level : ${prefs.explanationLevel}`);
+  console.log(`  style             : ${prefs.style}`);
+  console.log(`  detail            : ${prefs.detail}`);
+  console.log(`  analogies/examples: ${prefs.includeAnalogies ? "yes" : "no"}`);
+  console.log(`  diagrams          : ${prefs.includeDiagrams ? "yes" : "no"}`);
+  console.log(`  preferred shell   : ${prefs.preferredShell ?? "(auto-detect)"}`);
+  console.log(`  risk tolerance    : ${prefs.riskTolerance} (wording only — never says "safe to push")`);
+  console.log(`  updated           : ${new Date(prefs.updatedAt).toISOString()}`);
+  console.log(`  stored at         : ${preferencesPath()}  (host storage — outside any target)`);
+}
+
+/**
+ * `prefs` command: view / update / reset GLOBAL user preferences (prompt 36).
+ *   prefs                       → show (also `prefs show`)
+ *   prefs set --level junior --style flow-oriented --detail thorough \
+ *             --shell zsh --risk cautious --analogies|--no-analogies --diagrams|--no-diagrams
+ *   prefs reset                 → restore defaults (junior lens)
+ * Pure host-side: never reads or writes any target project.
+ */
+function runPrefs(args: Args, now: number): void {
+  const sub = args.subcmd ?? "show";
+  if (sub === "reset" || args.bools.has("reset")) {
+    const prefs = defaultPreferences(now);
+    savePreferences(prefs);
+    console.log("[prefs] reset to defaults (junior-engineer lens).");
+    printPreferences(prefs);
+    return;
+  }
+  if (sub === "set") {
+    const prefs = loadPreferences(now);
+    const update: PreferenceUpdate = {};
+    const level = args.flags.get("level");
+    if (level) {
+      if (!EXPERIENCE_LEVELS.includes(level as ExperienceLevel)) {
+        console.error(`[prefs] invalid --level "${level}" (expected: ${EXPERIENCE_LEVELS.join(", ")})`);
+        process.exit(1);
+      }
+      update.explanationLevel = level as ExperienceLevel;
+    }
+    const style = args.flags.get("style");
+    if (style) {
+      if (!STYLES.includes(style as UserPreferences["style"])) {
+        console.error(`[prefs] invalid --style "${style}" (expected: ${STYLES.join(", ")})`);
+        process.exit(1);
+      }
+      update.style = style as UserPreferences["style"];
+    }
+    const detail = args.flags.get("detail");
+    if (detail) {
+      if (!DETAILS.includes(detail as UserPreferences["detail"])) {
+        console.error(`[prefs] invalid --detail "${detail}" (expected: ${DETAILS.join(", ")})`);
+        process.exit(1);
+      }
+      update.detail = detail as UserPreferences["detail"];
+    }
+    const risk = args.flags.get("risk");
+    if (risk) {
+      if (!RISKS.includes(risk as UserPreferences["riskTolerance"])) {
+        console.error(`[prefs] invalid --risk "${risk}" (expected: ${RISKS.join(", ")})`);
+        process.exit(1);
+      }
+      update.riskTolerance = risk as UserPreferences["riskTolerance"];
+    }
+    if (args.flags.has("shell")) update.preferredShell = args.flags.get("shell") || null;
+    if (args.bools.has("analogies")) update.includeAnalogies = true;
+    if (args.bools.has("no-analogies")) update.includeAnalogies = false;
+    if (args.bools.has("diagrams")) update.includeDiagrams = true;
+    if (args.bools.has("no-diagrams")) update.includeDiagrams = false;
+    if (Object.keys(update).length === 0) {
+      console.error("[prefs] set: nothing to update — pass e.g. --level junior --style flow-oriented");
+      process.exit(1);
+    }
+    const next = applyPreferenceUpdate(prefs, update, now);
+    savePreferences(next);
+    console.log(`[prefs] updated: ${Object.keys(update).join(", ")}`);
+    printPreferences(next);
+    return;
+  }
+  // default: show
+  printPreferences(loadPreferences(now));
+}
+
+/**
+ * `memory` command: show / update / reset PER-PROJECT memory (prompt 36).
+ *   memory --target <id|name|path>                 → show summary
+ *   memory set --target <t> --nickname "the API" --confused "..." --flow flow-map
+ *   memory reset --target <t>                       → clear this project's memory
+ * Per-project memory lives in the target's HOST storage dir; the target is never touched.
+ */
+function runMemory(args: Args, now: number): void {
+  const ctx = resolveProjectMemoryContext(args, now);
+  if (!ctx) {
+    console.error("[memory] no target resolved — pass --target <id|name|path> (and scan it first).");
+    process.exit(1);
+  }
+  const memPath = projectMemoryPath(ctx.targetPath);
+  const sub = args.subcmd ?? "show";
+
+  if (sub === "reset" || args.bools.has("reset")) {
+    saveProjectMemory(emptyProjectMemory(ctx.projectId, ctx.targetPath, now), memPath);
+    console.log(`[memory] reset project memory for ${ctx.targetPath}`);
+    return;
+  }
+  if (sub === "set") {
+    const mem = loadProjectMemory(ctx.targetPath, ctx.projectId, now, memPath);
+    const update: ProjectMemoryUpdate = {};
+    if (args.flags.has("nickname")) update.nickname = args.flags.get("nickname") || null;
+    if (args.flags.get("question")) update.addQuestion = args.flags.get("question");
+    if (args.flags.get("confused")) update.addConfusion = args.flags.get("confused");
+    if (args.flags.get("file")) update.addInspectedFile = args.flags.get("file");
+    if (args.flags.get("flow")) update.addPreferredFlow = args.flags.get("flow");
+    if (args.flags.get("explanation")) update.addExplanation = { note: args.flags.get("explanation") as string, at: now };
+    if (Object.keys(update).length === 0) {
+      console.error("[memory] set: nothing to update — pass e.g. --nickname \"the API\" --confused \"auth flow\"");
+      process.exit(1);
+    }
+    const next = applyProjectMemoryUpdate(mem, update, now);
+    saveProjectMemory(next, memPath);
+    console.log(`[memory] updated: ${Object.keys(update).join(", ")}`);
+    return;
+  }
+
+  // default: show summary
+  const mem = loadProjectMemory(ctx.targetPath, ctx.projectId, now, memPath);
+  if (args.json) {
+    process.stdout.write(JSON.stringify(mem, null, 2) + "\n");
+    return;
+  }
+  console.log(`[memory] Project memory for ${ctx.targetPath} (id ${ctx.projectId}):`);
+  console.log(`  nickname           : ${mem.nickname ?? "(none)"}`);
+  console.log(`  previous questions : ${mem.previousQuestions.length ? mem.previousQuestions.slice(-5).join(" | ") : "(none)"}`);
+  console.log(`  useful explanations: ${mem.usefulExplanations.length ? mem.usefulExplanations.slice(-3).map((e) => e.note).join(" | ") : "(none)"}`);
+  console.log(`  confusion points   : ${mem.confusionPoints.length ? mem.confusionPoints.join(" | ") : "(none)"}`);
+  console.log(`  inspected files    : ${mem.inspectedFiles.length ? mem.inspectedFiles.slice(-8).join(", ") : "(none)"}`);
+  console.log(`  preferred flows    : ${mem.preferredFlows.length ? mem.preferredFlows.join(", ") : "(none)"}`);
+  console.log(`  stored at          : ${memPath}  (host storage — outside the target)`);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now(); // injected here at the edge ONLY
   if (args.cmd === "check") runCheck(args);
   else if (args.cmd === "diff") runDiff(args);
-  else if (args.cmd === "docs") runDocs(args);
+  else if (args.cmd === "docs") runDocs(args, now);
   else if (args.cmd === "env") await runEnv(args, now);
   else if (args.cmd === "explain") runExplain(args, now);
   else if (args.cmd === "report") runReport(args, now);
   else if (args.cmd === "verify") await runVerify(args, now);
   else if (args.cmd === "targets") runTargets(args, now);
   else if (args.cmd === "freshness") runFreshness(args);
+  else if (args.cmd === "prefs") runPrefs(args, now);
+  else if (args.cmd === "memory") runMemory(args, now);
   else await runScan(args, now);
 }
 

@@ -121,6 +121,18 @@ describe("buildChangeReport", () => {
     expect(md).toContain("Do not know yet");
   });
 
+  it("risk tolerance tunes the verdict FRAMING but never says safe (prompt 36)", () => {
+    writeFileSync(join(root, "src", "server.ts"), 'app.get("/api/x", () => {});\n// edit\n');
+    const cautious = buildChangeReport(ws, { generatedAt: FIXED_NOW, repoRoots: [{ name, rootPath: root }], riskTolerance: "cautious" });
+    const pragmatic = buildChangeReport(ws, { generatedAt: FIXED_NOW, repoRoots: [{ name, rootPath: root }], riskTolerance: "pragmatic" });
+    expect(cautious.verdict).toMatch(/higher-risk/i);
+    expect(pragmatic.verdict).toMatch(/Not enough evidence/i);
+    // neither ever asserts safety — the honesty rule is preserved
+    expect(cautious.verdict).toMatch(/does not assert the changes are safe/);
+    expect(pragmatic.verdict).toMatch(/does not assert the changes are safe/);
+    expect(cautious.verdict).not.toMatch(/safe to push/);
+  });
+
   it("attaches a safety classification to recommended commands (never auto-runs)", () => {
     writeFileSync(join(root, "src", "server.ts"), 'app.get("/api/x", () => {});\n// edit\n');
     const report = buildChangeReport(ws, { generatedAt: FIXED_NOW, repoRoots: [{ name, rootPath: root }] });

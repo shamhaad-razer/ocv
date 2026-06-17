@@ -40,6 +40,11 @@ export interface ChangeOptions {
   repoRoots?: { name: string; rootPath: string }[];
   /** Prior verification results (from `verify`), to fold runtime evidence in. */
   verification?: VerificationStore | null;
+  /**
+   * Remembered risk-tolerance wording (prompt 36). Tunes HOW the verdict frames
+   * risk — it NEVER changes the honesty rule (we still never say "safe to push").
+   */
+  riskTolerance?: "cautious" | "balanced" | "pragmatic";
 }
 
 function changeKindFromStatus(status: string): ChangedFile["changeKind"] {
@@ -361,16 +366,29 @@ export function buildChangeReport(ws: WorkspaceIntel, opts: ChangeOptions): Chan
   const anyFailed = (verification?.results ?? []).some((r) => r.kind === "test-command" && r.passed === false);
 
   // The verdict NEVER claims "safe" — it states scope + what's verified vs not.
+  // Risk-tolerance (prompt 36) only tunes the FRAMING, never the honesty: a
+  // "pragmatic" user leads with what's verified; a "cautious" user leads with the
+  // unknowns + checks. Either way it ends "does not assert the changes are safe".
+  const risk = opts.riskTolerance ?? "balanced";
+  const evidenceClause = anyFailed
+    ? "Some runtime-verified checks FAILED — do not push until fixed. "
+    : anyVerified
+      ? "Some recommended checks were runtime-verified passing, but flow impact is still not traced. "
+      : "Recommended tests have NOT been run and flow impact is not traced. ";
+  const closer =
+    risk === "cautious"
+      ? "Treat as higher-risk until you run the recommended commands and review the manual-review items. This report does not assert the changes are safe."
+      : risk === "pragmatic"
+        ? (anyVerified && !anyFailed
+            ? "Lower risk given the passing checks, but still review the manual-review items and run the rest before pushing. This report does not assert the changes are safe."
+            : "Not enough evidence yet — run the recommended commands and review the manual-review items before pushing. This report does not assert the changes are safe.")
+        : "Review the manual-review items and run the recommended commands before pushing. This report does not assert the changes are safe.";
   const verdict =
     totalChanged === 0
       ? "No working-tree changes detected across the inspected repos."
       : `${totalChanged} changed file(s) across ${reposChanged.length} repo(s) (${reposChanged.join(", ")}). ` +
-        (anyFailed
-          ? "Some runtime-verified checks FAILED — do not push until fixed. "
-          : anyVerified
-            ? "Some recommended checks were runtime-verified passing, but flow impact is still not traced. "
-            : "Recommended tests have NOT been run and flow impact is not traced. ") +
-        "Review the manual-review items and run the recommended commands before pushing. This report does not assert the changes are safe.";
+        evidenceClause +
+        closer;
 
   return {
     generatedAt: now,

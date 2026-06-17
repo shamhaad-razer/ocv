@@ -17,6 +17,7 @@ import { join, relative, resolve, sep } from "node:path";
 import { buildGrounding, hashFile } from "./grounding.js";
 import { findReferences } from "./references.js";
 import { flowForRepo } from "./flowmap.js";
+import type { Guidance } from "./memory.js";
 import type { SymbolReference } from "./types.js";
 import type {
   Confidence,
@@ -203,6 +204,12 @@ export interface ExplainOptions {
   generatedAt: number;
   /** The list of repo-relative files (from the index/scan) for caller search. */
   repoFiles?: string[];
+  /**
+   * Remembered presentation guidance (prompt 36). When the request doesn't pin an
+   * experienceLevel, the guidance's level is used — so a once-set "junior" lens is
+   * applied automatically. The guidance lines are surfaced for transparency.
+   */
+  guidance?: Guidance;
 }
 
 /**
@@ -210,8 +217,11 @@ export interface ExplainOptions {
  * `ws` is the loaded project intelligence index; `repoFiles` (optional) lets the
  * caller pass the file list for caller search without re-walking.
  */
-export function explainSelection(req: ExplainRequest, ws: WorkspaceIntel, opts: ExplainOptions): ExplainPackage {
+export function explainSelection(req0: ExplainRequest, ws: WorkspaceIntel, opts: ExplainOptions): ExplainPackage {
   const now = opts.generatedAt;
+  // Apply remembered preference: if the caller didn't pin a level, use the
+  // guidance's level (e.g. a once-set "junior" lens) so it's applied automatically.
+  const req: ExplainRequest = opts.guidance && !req0.experienceLevel ? { ...req0, experienceLevel: opts.guidance.level } : req0;
   const repo = ws.repos.find((r) => r.name === req.repo);
   const knownUnknowns: KnownUnknown[] = [];
   const followups: string[] = [];
@@ -351,7 +361,7 @@ export function explainSelection(req: ExplainRequest, ws: WorkspaceIntel, opts: 
   const topDir = req.path.includes("/") ? req.path.split("/")[0] : null;
   const moduleArea = svcForFile ? `${svcForFile.value.name} (${svcForFile.value.kind} service)` : topDir;
 
-  const explanation = buildExplanation(req, enclosing, callees, callers, related, selected.length, moduleArea, flowContext);
+  const explanation = buildExplanation(req, enclosing, callees, callers, related, selected.length, moduleArea, flowContext, opts.guidance);
 
   return {
     request: req,
@@ -377,6 +387,7 @@ export function explainSelection(req: ExplainRequest, ws: WorkspaceIntel, opts: 
     staleWarning,
     knownUnknowns,
     suggestedFollowups: followups,
+    appliedGuidance: opts.guidance ? { level: req.experienceLevel ?? "junior", lines: opts.guidance.lines } : undefined,
     grounding,
   };
 }
@@ -391,6 +402,7 @@ function buildExplanation(
   lineCount: number,
   moduleArea: string | null,
   flowContext: { from: string; to: string; kind: string; label: string; confidence: Confidence }[],
+  guidance?: Guidance,
 ): string {
   const parts: string[] = [];
   if (req.intent) parts.push(`You asked: "${req.intent}". Here's what the code shows (grounded in the file + scan):`);
@@ -434,9 +446,14 @@ function buildExplanation(
     : "Next, inspect the enclosing function/file and the symbols used in this range.";
   parts.push(next);
 
-  const lens = req.experienceLevel ?? "junior";
+  const lens = req.experienceLevel ?? guidance?.level ?? "junior";
   if (lens === "junior" || lens === "new-to-repo") {
     parts.push("Heads-up: this explanation is built from a quick static scan, not from running the code — verify the callers and run the tests before relying on it.");
+  }
+  // Surface the remembered presentation lens so the user can see it was applied
+  // (transparency — no hidden assumptions, prompt 36 req #7).
+  if (guidance) {
+    parts.push(`(Presented for a ${lens} engineer per your saved preferences — change with \`prefs set --level <level>\`.)`);
   }
   return parts.join(" ");
 }
