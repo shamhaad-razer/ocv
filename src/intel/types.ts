@@ -516,6 +516,12 @@ export interface ExplainPackage {
    * when no memory/preferences were supplied.
    */
   appliedGuidance?: { level: ExplainRequest["experienceLevel"]; lines: string[] };
+  /**
+   * The automatic context pack assembled for this explanation (prompt 37). Lets
+   * highlight-to-explain ship the relevant project context WITHOUT the user
+   * hand-attaching files. Absent when the caller didn't request a pack.
+   */
+  contextPack?: ContextPack;
   grounding: Grounding;
 }
 
@@ -688,4 +694,96 @@ export interface ReferenceResult {
   filesSearched: number;
   /** True if the search was truncated by the cap. */
   truncated: boolean;
+}
+
+// ----- Automatic Context Pack (prompt 37) -----
+
+/**
+ * What the user is trying to do — drives which context is RELEVANT so the pack
+ * stays compact (req #1/#5). Each mode emphasizes a different slice of the index.
+ */
+export type ContextMode = "onboarding" | "explain" | "change-confidence" | "deployment" | "command-help";
+
+/** The request that a context pack is built for (prompt 37 req #1). */
+export interface ContextPackRequest {
+  /** Target project id (path hash) — resolved by the caller; recorded for traceability. */
+  projectId: string;
+  /** The user's question / intent (free text). */
+  question: string;
+  /** Optional repo name to scope to (else inferred from filePath / whole workspace). */
+  repo?: string;
+  /** Optional repo-relative file path the question is about. */
+  filePath?: string;
+  /** Optional 1-based inclusive line range within filePath. */
+  startLine?: number;
+  endLine?: number;
+  /** Optional selected code text (UI may send it; resolution still reads the file). */
+  selectedCode?: string;
+  /** What the user is doing; selects the relevance lens. Default: "explain". */
+  mode?: ContextMode;
+}
+
+/**
+ * One included context item. Every item is RELEVANCE-SCORED, SOURCE-GROUNDED, and
+ * carries its own freshness/confidence so the LLM can hedge (req #2/#3/#4).
+ */
+export interface ContextItem {
+  /** What kind of context this is (so a consumer can group/render). */
+  kind:
+    | "project-metadata"
+    | "repo-summary"
+    | "selected-code"
+    | "nearby-code"
+    | "symbol"
+    | "reference"
+    | "route"
+    | "command"
+    | "env-var"
+    | "deploy-file"
+    | "doc-file"
+    | "flow-edge"
+    | "known-unknown";
+  /** Short human label. */
+  label: string;
+  /** The actual content (code snippet, summary line, command, etc.). */
+  content: string;
+  /** Why this item was selected (relevance rationale — transparency). */
+  reason: string;
+  /** Source references backing this item (req #3). */
+  sources: SourceRef[];
+  confidence: Confidence;
+  freshness: FreshnessStatus;
+  /** True if this item is known/likely stale or otherwise uncertain (req #4). */
+  uncertain: boolean;
+}
+
+/**
+ * The compact, automatically-assembled context pack (prompt 37). Replaces
+ * hand-made attachment files: the user asks a question, OpenClaw gathers the
+ * relevant source-grounded intelligence + their preferences and packages it.
+ */
+export interface ContextPack {
+  /** Schema version so consumers can adapt. */
+  version: 1;
+  generatedAt: number;
+  scanVersion: string;
+  /** The resolved request. */
+  request: ContextPackRequest;
+  /** The target project path (recorded; never modified). */
+  targetPath: string;
+  mode: ContextMode;
+  /** Bounded, relevance-ranked context items. */
+  items: ContextItem[];
+  /** The remembered presentation guidance (prompt 36) applied to this pack. */
+  guidance: { level: ExplainRequest["experienceLevel"]; lines: string[] };
+  /** Overall freshness verdict for the index this pack drew from. */
+  freshness: FreshnessStatus;
+  /** Overall confidence (the WORST of the included items — never over-claims). */
+  confidence: Confidence;
+  /** Things the pack is honest about NOT knowing (req #2). */
+  knownUnknowns: KnownUnknown[];
+  /** Transparency: how many candidate items existed vs. how many were included. */
+  selection: { candidates: number; included: number; budget: number; droppedForBudget: number };
+  /** A one-paragraph human-readable preamble the LLM can read first. */
+  summary: string;
 }

@@ -59,8 +59,10 @@ export const ARTIFACTS = {
   changeReportJson: "change-report.json",
   changeReportMd: "change-report.md",
   verification: "verification.json",
+  contextPack: "context-pack.json",
   docsDir: "docs",
   reportHistoryDir: "report-history",
+  contextHistoryDir: "context-history",
 } as const;
 
 export type ArtifactKey = keyof typeof ARTIFACTS;

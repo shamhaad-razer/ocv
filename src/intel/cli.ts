@@ -34,6 +34,7 @@ import {
 } from "./onboarding.js";
 import { detectMachineEnv } from "./env.js";
 import { explainSelection, listRepoFiles } from "./explain.js";
+import { buildContextPack } from "./contextpack.js";
 import { buildChangeReport } from "./change.js";
 import { mergeVerificationStores, runVerification } from "./verify.js";
 import { renderMachineEnv, renderChangeReportMarkdown } from "./render.js";
@@ -68,10 +69,10 @@ import {
   type UserPreferences,
 } from "./memory.js";
 import { projectIdFor } from "./storage.js";
-import type { ExplainRequest, KnownUnknown, VerificationStore, WorkspaceIntel } from "./types.js";
+import type { ContextMode, ContextPackRequest, ExplainRequest, KnownUnknown, VerificationStore, WorkspaceIntel } from "./types.js";
 
 interface Args {
-  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness" | "prefs" | "memory";
+  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness" | "prefs" | "memory" | "context";
   /** Resolved absolute path of the TARGET PROJECT being studied (read-only). */
   targetPath: string;
   /** Whether the user explicitly supplied --target/--root (vs the legacy default). */
@@ -106,6 +107,12 @@ interface Args {
   /** targets add: display name + description. */
   name?: string;
   desc?: string;
+  /** context/explain: the user's question / intent. */
+  question?: string;
+  /** context: mode lens (onboarding|explain|change-confidence|deployment|command-help). */
+  mode?: ContextMode;
+  /** context: max items budget. */
+  maxItems?: number;
   /** Raw flag map (for prefs/memory which accept many ad-hoc keys). */
   flags: Map<string, string>;
   /** Raw bool flags (e.g. --reset). */
@@ -113,11 +120,11 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets", "freshness", "prefs", "memory"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
+  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets", "freshness", "prefs", "memory", "context"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const positionals: string[] = [];
-  const VALUELESS = new Set(["no-write", "confirm", "local", "json", "reset", "analogies", "no-analogies", "diagrams", "no-diagrams"]);
+  const VALUELESS = new Set(["no-write", "confirm", "local", "json", "reset", "analogies", "no-analogies", "diagrams", "no-diagrams", "pack", "no-pack", "save"]);
   for (let i = 1; i < argv.length; i++) {
     if (argv[i].startsWith("--")) {
       const key = argv[i].slice(2);
@@ -170,7 +177,7 @@ function parseArgs(argv: string[]): Args {
     checkPorts,
     selection: positionals[0],
     level,
-    intent: flags.get("intent") || undefined,
+    intent: flags.get("intent") || flags.get("question") || flags.get("q") || undefined,
     run: flags.get("run") || undefined,
     runRepo: flags.get("repo") || undefined,
     confirmed: bools.has("confirm"),
@@ -178,6 +185,9 @@ function parseArgs(argv: string[]): Args {
     ref: positionals[1],
     name: flags.get("name") || undefined,
     desc: flags.get("desc") || undefined,
+    question: flags.get("question") || flags.get("q") || undefined,
+    mode: (flags.get("mode") as ContextMode | undefined) || undefined,
+    maxItems: flags.get("max") ? parseInt(flags.get("max") as string, 10) : undefined,
     flags,
     bools,
   };
@@ -549,9 +559,30 @@ function runExplain(args: Args, now: number): void {
   // Remember that the user inspected this file (curated project memory).
   rememberInspectedFile(args, now, req.path, req.intent);
   const pkg = explainSelection(req, ws, { generatedAt: now, repoFiles, guidance });
+
+  // Prompt 37: highlight-to-explain attaches an automatic context pack (unless
+  // --no-pack) so the relevant project context travels WITH the explanation — no
+  // hand-attached files. The pack is read-only + host-only.
+  if (!args.bools.has("no-pack")) {
+    pkg.contextPack = buildContextPack(
+      {
+        projectId: projectIdFor(args.targetPath),
+        question: req.intent ?? `Explain ${req.path}:${req.startLine}-${req.endLine}`,
+        repo: req.repo,
+        filePath: req.path,
+        startLine: req.startLine,
+        endLine: req.endLine,
+        selectedCode: req.selectedText,
+        mode: "explain",
+      },
+      ws,
+      { generatedAt: now, guidance, maxItems: args.maxItems },
+    );
+  }
+
   // Print the structured package for a future frontend; stderr carries a 1-line summary.
   console.error(
-    `[explain] ${req.repo}/${req.path}:${req.startLine}-${req.endLine} → confidence=${pkg.confidence}, freshness=${pkg.freshness}${pkg.staleWarning ? " (STALE)" : ""}`,
+    `[explain] ${req.repo}/${req.path}:${req.startLine}-${req.endLine} → confidence=${pkg.confidence}, freshness=${pkg.freshness}${pkg.staleWarning ? " (STALE)" : ""}${pkg.contextPack ? `, contextPack=${pkg.contextPack.items.length} item(s)` : ""}`,
   );
   process.stdout.write(JSON.stringify(pkg, null, 2) + "\n");
 }
@@ -837,6 +868,15 @@ function rememberInspectedFile(args: Args, now: number, path: string, intent?: s
   saveProjectMemory(applyProjectMemoryUpdate(mem, update, now), memPath);
 }
 
+/** Curate "the user asked this question" into project memory (host-only, capped). */
+function rememberQuestion(args: Args, now: number, question: string): void {
+  const ctx = resolveProjectMemoryContext(args, now);
+  if (!ctx) return;
+  const memPath = projectMemoryPath(ctx.targetPath);
+  const mem = loadProjectMemory(ctx.targetPath, ctx.projectId, now, memPath);
+  saveProjectMemory(applyProjectMemoryUpdate(mem, { addQuestion: question }, now), memPath);
+}
+
 const EXPERIENCE_LEVELS: ExperienceLevel[] = ["new-to-repo", "junior", "mid", "senior"];
 const STYLES: UserPreferences["style"][] = ["clear-step-by-step", "flow-oriented", "concise", "reference"];
 const DETAILS: UserPreferences["detail"][] = ["brief", "balanced", "thorough"];
@@ -982,6 +1022,62 @@ function runMemory(args: Args, now: number): void {
   console.log(`  stored at          : ${memPath}  (host storage — outside the target)`);
 }
 
+/**
+ * Automatic Context Pack (prompt 37): assemble the relevant, source-grounded
+ * project context for a question + optional selection, so the user never
+ * hand-makes attachment files. Prints the pack as JSON (machine-readable) and a
+ * human summary on stderr. `--save` keeps a timestamped copy in HOST storage
+ * (debugging/history) — NEVER inside the target.
+ *   context --target <t> --question "how does chat routing work?" [--mode explain]
+ *           ["<repo>/<path>:<a>-<b>"] [--max 24] [--save] [--json]
+ */
+function runContext(args: Args, now: number): void {
+  const jsonPath = join(args.out, "project-intel.json");
+  if (!existsSync(jsonPath)) {
+    console.error(`[context] no scan at ${jsonPath} for \`${args.targetPath}\` — run \`scan --target <path>\` first`);
+    process.exit(1);
+  }
+  if (!args.question && !args.selection) {
+    console.error('[context] usage: context --target <t> --question "<your question>" [--mode explain] ["<repo>/<path>:<a>-<b>"] [--save]');
+    process.exit(1);
+  }
+  const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
+
+  // An optional positional selection ("<repo>/<path>:<a>-<b>") grounds the pack in code.
+  const sel = args.selection ? parseExplainTarget(args.selection) : null;
+  const req: ContextPackRequest = {
+    projectId: projectIdFor(args.targetPath),
+    question: args.question ?? `Explain ${args.selection}`,
+    repo: sel?.repo,
+    filePath: sel?.path,
+    startLine: sel?.startLine,
+    endLine: sel?.endLine,
+    mode: args.mode ?? (sel ? "explain" : "onboarding"),
+  };
+  const guidance = guidanceFor(args, now);
+  const pack = buildContextPack(req, ws, { generatedAt: now, guidance, maxItems: args.maxItems });
+
+  // Remember the question against the project (curated memory) — host-only.
+  if (args.question) rememberQuestion(args, now, args.question);
+
+  console.error(
+    `[context] mode=${pack.mode} → ${pack.selection.included}/${pack.selection.candidates} item(s), confidence=${pack.confidence}, freshness=${pack.freshness}${pack.selection.droppedForBudget ? ` (${pack.selection.droppedForBudget} dropped for budget)` : ""}`,
+  );
+
+  if (args.bools.has("save")) {
+    // HOST storage only (req #9): latest + timestamped history. NEVER in the target.
+    const storage = new ProjectStorage(args.out, args.local);
+    storage.writeJson("contextPack", pack);
+    const histDir = join(args.out, "context-history");
+    mkdirSync(histDir, { recursive: true });
+    const histPath = join(histDir, `context-${now}.json`);
+    writeFileSync(histPath, JSON.stringify(pack, null, 2), "utf-8");
+    console.error(`[context] saved → ${storage.path("contextPack")} + ${histPath}`);
+  }
+
+  process.stdout.write(JSON.stringify(pack, null, 2) + "\n");
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now(); // injected here at the edge ONLY
@@ -996,6 +1092,7 @@ async function main(): Promise<void> {
   else if (args.cmd === "freshness") runFreshness(args);
   else if (args.cmd === "prefs") runPrefs(args, now);
   else if (args.cmd === "memory") runMemory(args, now);
+  else if (args.cmd === "context") runContext(args, now);
   else await runScan(args, now);
 }
 
