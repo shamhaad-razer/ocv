@@ -53,6 +53,7 @@ import { buildDeploymentReport } from "./deployment.js";
 import { buildDashboard } from "./dashboard.js";
 import { detectToolOpportunities } from "./tooldetect.js";
 import { generateTool, isGeneratable, GENERATABLE } from "./toolgen.js";
+import { checkToolsFreshness, regenerateTools } from "./toolfresh.js";
 import { buildMirrorReport } from "./mirror.js";
 import { buildChangeReport } from "./change.js";
 import { mergeVerificationStores, runVerification } from "./verify.js";
@@ -143,7 +144,7 @@ function parseArgs(argv: string[]): Args {
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const positionals: string[] = [];
-  const VALUELESS = new Set(["no-write", "confirm", "local", "json", "reset", "analogies", "no-analogies", "diagrams", "no-diagrams", "pack", "no-pack", "save"]);
+  const VALUELESS = new Set(["no-write", "confirm", "local", "json", "reset", "analogies", "no-analogies", "diagrams", "no-diagrams", "pack", "no-pack", "save", "all"]);
   for (let i = 1; i < argv.length; i++) {
     if (argv[i].startsWith("--")) {
       const key = argv[i].slice(2);
@@ -1457,7 +1458,65 @@ function runTools(args: Args, now: number): void {
     return;
   }
 
-  console.error(`[tools] unknown subcommand "${sub}" — use: suggest | generate | list | show`);
+  // tools freshness | tools check — per-tool stale detection (prompt 47).
+  if (sub === "freshness" || sub === "check") {
+    const { entry, ws, storage } = loadToolsContext(args, now);
+    const idx = loadGeneratedTools(storage, entry.id, now);
+    const report = checkToolsFreshness({
+      generatedAt: now,
+      project: entry,
+      ws,
+      index: idx,
+      currentHash: (repoRoot, rel) => hashFile(join(repoRoot, rel)),
+      currentGit: (repoRoot) => { const g = readGitInfo(repoRoot); return { commit: g.commit, dirty: g.dirty }; },
+    });
+    if (args.json) { process.stdout.write(JSON.stringify(report, null, 2) + "\n"); return; }
+    console.error(`[tools] ${entry.displayName} (${entry.id}) — project freshness: ${report.projectFreshness}`);
+    console.log(report.summary);
+    for (const t of report.tools) {
+      const flag = t.verdict === "fresh" ? "✓" : t.verdict === "needs-rescan" ? "↻ re-scan" : "⚠";
+      console.log(`\n${flag} ${t.title} [${t.type}] — ${t.verdict}${t.canAutoUpdate ? " (can auto-update)" : t.needsRescan ? " (needs re-scan)" : ""}`);
+      for (const r of t.reasons.slice(0, 3)) console.log(`    · ${r}`);
+      if (t.changedFiles.length) console.log(`    changed: ${t.changedFiles.slice(0, 5).map((f) => `${f.repo}/${f.ref}`).join(", ")}`);
+    }
+    return;
+  }
+
+  // tools regenerate --tool <id|type> | --all — rewrite host-side specs (prompt 47).
+  if (sub === "regenerate") {
+    const { entry, ws, storage } = loadToolsContext(args, now);
+    const idx = loadGeneratedTools(storage, entry.id, now);
+    if (idx.tools.length === 0) { console.error(`[tools] no generated tools for \`${entry.displayName}\` — run \`tools generate\` first.`); process.exit(1); }
+    const only = args.bools.has("all") ? undefined : (args.flags.get("tool") ?? args.ref);
+    if (!only && !args.bools.has("all")) { console.error("[tools] regenerate: pass --tool <id|type> or --all"); process.exit(1); }
+    const fresh = checkToolsFreshness({
+      generatedAt: now,
+      project: entry,
+      ws,
+      index: idx,
+      currentHash: (repoRoot, rel) => hashFile(join(repoRoot, rel)),
+      currentGit: (repoRoot) => { const g = readGitInfo(repoRoot); return { commit: g.commit, dirty: g.dirty }; },
+    });
+    const baseCommit = ws?.repos[0]?.gitCommit ?? null;
+    const { index: nextIdx, report } = regenerateTools({ generatedAt: now, project: entry, ws, index: idx, freshnessReport: fresh, only, scanBaseCommit: baseCommit });
+    storage.writeJson("generatedTools", nextIdx);
+    if (args.json) { process.stdout.write(JSON.stringify(report, null, 2) + "\n"); return; }
+    console.error(`[tools] ${entry.displayName} — ${report.summary}`);
+    for (const o of report.outcomes) {
+      console.log(`\n▸ ${o.title} [${o.type}] — ${o.status}`);
+      for (const r of o.reasons.slice(0, 2)) console.log(`    · ${r}`);
+      if (o.status === "updated") {
+        if (o.confidenceBefore !== o.confidenceAfter) console.log(`    confidence: ${o.confidenceBefore} → ${o.confidenceAfter}`);
+        if (o.knownUnknownsAdded.length) console.log(`    +unknowns: ${o.knownUnknownsAdded.join(", ")}`);
+        if (o.knownUnknownsResolved.length) console.log(`    -unknowns: ${o.knownUnknownsResolved.join(", ")}`);
+      }
+    }
+    if (report.stillStale.length) console.log(`\n  still stale (blocked): ${report.stillStale.join(", ")} — re-scan the target then regenerate.`);
+    console.error(`[tools] wrote ${storage.path("generatedTools")} (HOST storage — target not modified)`);
+    return;
+  }
+
+  console.error(`[tools] unknown subcommand "${sub}" — use: suggest | generate | list | show | freshness | check | regenerate`);
   process.exit(1);
 }
 

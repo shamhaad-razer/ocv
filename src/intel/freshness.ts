@@ -4,10 +4,10 @@
 // those to the generated artifacts they invalidate. READ-ONLY w.r.t. the target —
 // it only hashes/stats files and reads git, never writes into the target.
 
-import type { Confidence, RepoIntel, WorkspaceIntel } from "./types.js";
+import type { Confidence, FreshnessVerdict, RepoIntel, WorkspaceIntel } from "./types.js";
 
-/** The freshness verdict levels (req #3). */
-export type FreshnessVerdict = "fresh" | "possibly-stale" | "stale" | "unknown";
+/** The freshness verdict levels (req #3). Defined in types.ts; re-exported here. */
+export type { FreshnessVerdict };
 
 /** Categories of "important files" we detect drift in (req #4). */
 export type FileCategory =

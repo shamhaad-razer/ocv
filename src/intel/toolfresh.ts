@@ -1,0 +1,277 @@
+// Generated-tool freshness & auto-update (prompt 47; 13-...md, 28-...md). READ-ONLY.
+//
+// Decides whether each generated tool spec is still current, WHY, and whether it
+// can be safely regenerated now or needs a target re-scan first. Never modifies
+// the target — it only re-hashes the tool's recorded source files and consults the
+// project freshness verdict (both read-only). Regeneration rewrites HOST-side
+// specs only.
+//
+// Stale signals (req #3), in order of authority:
+//   1. generator version changed        → stale (the generator itself changed)
+//   2. a recorded source file's hash changed vs the live file → stale (best signal)
+//   3. the project freshness says a dependency ARTIFACT is affected → stale
+//   4. the re-detected proposal's signature differs → stale (material change)
+//   5. project freshness possibly-stale (HEAD moved / dirty) → possibly-stale
+// When the project drifted but hasn't been re-scanned, regeneration would just
+// reproduce the SAME spec — so we mark `needsRescan` and say so honestly.
+
+import { computeFreshness, type CurrentGit, type CurrentHash } from "./freshness.js";
+import { detectToolOpportunities } from "./tooldetect.js";
+import { buildDashboard } from "./dashboard.js";
+import { generateTool, GENERATOR_VERSION, proposalSignature } from "./toolgen.js";
+import type { TargetProject } from "./registry.js";
+import type {
+  Confidence,
+  GeneratedToolSpec,
+  GeneratedToolsIndex,
+  ToolFreshness,
+  ToolFreshnessReport,
+  ToolFreshnessVerdict,
+  ToolRegenOutcome,
+  ToolRegenReport,
+  WorkspaceIntel,
+} from "./types.js";
+
+export interface ToolFreshOptions {
+  generatedAt: number;
+  project: TargetProject;
+  /** Stored index (null if never scanned). */
+  ws: WorkspaceIntel | null;
+  index: GeneratedToolsIndex;
+  /** Read-only resolvers for live file hash + git (host can compute these). */
+  currentHash: CurrentHash;
+  currentGit: CurrentGit;
+}
+
+/** Compute freshness for every generated tool against the CURRENT target state. */
+export function checkToolsFreshness(opts: ToolFreshOptions): ToolFreshnessReport {
+  const { project, ws, index } = opts;
+  const targetPath = project.targetPath;
+
+  // Project freshness (the same engine the dashboard uses). Drives artifact-dep
+  // staleness + the "needs re-scan" recommendation.
+  const projFresh = ws ? computeFreshness(ws, opts.currentHash, opts.currentGit) : null;
+  const projectFreshness = projFresh?.overall ?? "unknown";
+  const affectedArtifacts = new Set<string>();
+  const changedByRef = new Map<string, string>(); // "repo:ref" → repo (for changed-file mapping)
+  for (const r of projFresh?.repos ?? []) {
+    for (const a of r.affectedArtifacts) affectedArtifacts.add(a);
+    for (const f of r.driftedFiles) changedByRef.set(`${r.repo}:${f.path}`, r.repo);
+  }
+  // re-detected proposals (to compare signatures) — only if scanned.
+  const freshProposalSig = new Map<string, string>();
+  if (ws) {
+    const dash = buildDashboard({ generatedAt: opts.generatedAt, project, ws });
+    const report = detectToolOpportunities({ generatedAt: opts.generatedAt, scanVersion: ws.scanVersion, dashboard: dash, ws });
+    for (const p of report.proposals) freshProposalSig.set(p.type, proposalSignature(p));
+  }
+
+  const tools: ToolFreshness[] = index.tools.map((t) =>
+    toolFreshness(t, ws, projectFreshness, affectedArtifacts, changedByRef, freshProposalSig, opts.currentHash, project),
+  );
+
+  const anyStale = tools.some((t) => t.verdict === "stale" || t.verdict === "possibly-stale" || t.verdict === "needs-rescan");
+  const rescanRecommended = projectFreshness === "stale" || projectFreshness === "possibly-stale";
+  const staleCount = tools.filter((t) => t.verdict !== "fresh").length;
+  const summary =
+    index.tools.length === 0
+      ? `No generated tools for \`${project.displayName}\`. Generate some with \`tools generate\`.`
+      : `${staleCount}/${index.tools.length} generated tool(s) are not fresh for \`${project.displayName}\` (project freshness: ${projectFreshness}). ` +
+        (rescanRecommended ? "Re-scan the target, then regenerate. " : anyStale ? "Regenerate the affected tools. " : "All tools are up to date. ") +
+        "Regeneration rewrites host-side specs only — the target is never modified.";
+
+  return { version: 1, generatedAt: opts.generatedAt, targetProjectId: project.id, targetPath, projectFreshness, tools, rescanRecommended, summary };
+}
+
+function toolFreshness(
+  t: GeneratedToolSpec,
+  ws: WorkspaceIntel | null,
+  projectFreshness: string,
+  affectedArtifacts: Set<string>,
+  changedByRef: Map<string, string>,
+  freshProposalSig: Map<string, string>,
+  currentHash: CurrentHash,
+  project: TargetProject,
+): ToolFreshness {
+  const reasons: string[] = [];
+  const changedFiles: { repo: string; ref: string }[] = [];
+  let verdict: ToolFreshnessVerdict = "fresh";
+
+  // 1) generator changed
+  if (t.generatorVersion !== GENERATOR_VERSION) {
+    verdict = "stale";
+    reasons.push(`generated by an older tool generator (${t.generatorVersion} → ${GENERATOR_VERSION}).`);
+  }
+
+  // 2) recorded source-file hash drift (the strongest signal). Re-hash the LIVE
+  //    file via the read-only resolver. Needs the repo root, resolved from ws.
+  const repoRoot = (repo: string): string | null => {
+    if (!ws) return null;
+    const r = ws.repos.find((x) => x.name === repo);
+    return r ? r.rootPath : null;
+  };
+  for (const sf of t.sourceFileHashes) {
+    const root = repoRoot(sf.repo) ?? project.targetPath;
+    const now = currentHash(root, sf.ref);
+    if (now === null) {
+      changedFiles.push({ repo: sf.repo, ref: sf.ref });
+      reasons.push(`source no longer readable: ${sf.repo}/${sf.ref}`);
+    } else if (now !== sf.hash) {
+      changedFiles.push({ repo: sf.repo, ref: sf.ref });
+    }
+  }
+  if (changedFiles.length > 0) {
+    verdict = "stale";
+    reasons.unshift(`${changedFiles.length} source file(s) the tool depends on changed: ${changedFiles.slice(0, 4).map((f) => `${f.repo}/${f.ref}`).join(", ")}${changedFiles.length > 4 ? "…" : ""}.`);
+  }
+
+  // 3) dependency artifact affected by project freshness
+  const hitArtifacts = t.dependsOnArtifacts.filter((a) => affectedArtifacts.has(a));
+  if (hitArtifacts.length > 0 && verdict !== "stale") {
+    verdict = "stale";
+    reasons.push(`a project-intelligence artifact this tool depends on is affected: ${hitArtifacts.join(", ")}.`);
+  }
+
+  // 4) proposal signature changed materially (only checkable if scanned)
+  const freshSig = freshProposalSig.get(t.type);
+  if (freshSig && freshSig !== t.proposalSignature && verdict !== "stale") {
+    verdict = "stale";
+    reasons.push("the underlying proposal changed materially (different evidence/counts).");
+  }
+
+  // 5) project possibly-stale (HEAD moved / dirty, no indexed file changed)
+  if (verdict === "fresh" && projectFreshness === "possibly-stale") {
+    verdict = "possibly-stale";
+    reasons.push("the target moved (commit/dirty) but no file this tool depends on changed — likely still fine.");
+  }
+  if (verdict === "fresh" && projectFreshness === "unknown") {
+    reasons.push("could not determine project freshness (non-git or unreadable) — treat as best-effort.");
+  }
+  if (verdict === "fresh") reasons.unshift("up to date: no depended-on source or artifact changed.");
+
+  // Re-scan needed only when the STORED INDEX itself is behind the live target —
+  // i.e. the project freshness engine (index-vs-disk) reports drift. In that case
+  // regenerating from the index would reproduce the SAME stale spec, so we must
+  // re-scan first. If the index is fresh, the tool can be regenerated NOW even if
+  // the SPEC's recorded hashes are behind (re-scan already happened).
+  const indexBehind = projectFreshness === "stale" || projectFreshness === "possibly-stale";
+  const needsRescan = ws != null && indexBehind;
+  // A non-fresh tool with a FRESH index can auto-update without a re-scan.
+  const canAutoUpdate = ws != null && !indexBehind && verdict !== "fresh";
+  if (needsRescan && verdict !== "fresh") verdict = "needs-rescan";
+
+  return {
+    toolId: t.id,
+    type: t.type,
+    title: t.title,
+    verdict,
+    reasons,
+    changedFiles,
+    affectedArtifacts: hitArtifacts,
+    canAutoUpdate,
+    needsRescan,
+  };
+}
+
+// --------------------------------------------------------------------------
+// Regeneration
+// --------------------------------------------------------------------------
+
+export interface ToolRegenOptions {
+  generatedAt: number;
+  project: TargetProject;
+  ws: WorkspaceIntel | null;
+  index: GeneratedToolsIndex;
+  freshnessReport: ToolFreshnessReport;
+  /** Restrict to one tool id/type; else regenerate every existing tool. */
+  only?: string;
+  scanBaseCommit?: string | null;
+}
+
+/**
+ * Regenerate generated tools from the CURRENTLY-STORED intelligence. Pure: builds
+ * new specs from the index; the caller persists them. Tools whose source files
+ * changed but whose index is stale are reported `stale-needs-rescan` (we do NOT
+ * pretend to update them). Returns the updated index + a regeneration report.
+ */
+export function regenerateTools(opts: ToolRegenOptions): { index: GeneratedToolsIndex; report: ToolRegenReport } {
+  const { project, ws, index } = opts;
+  const freshById = new Map(opts.freshnessReport.tools.map((t) => [t.toolId, t]));
+  const outcomes: ToolRegenOutcome[] = [];
+  const stillStale: string[] = [];
+
+  // Build the current proposals once (for regeneration input).
+  const proposalsByType = new Map<string, import("./types.js").ToolProposal>();
+  if (ws) {
+    const dash = buildDashboard({ generatedAt: opts.generatedAt, project, ws });
+    const report = detectToolOpportunities({ generatedAt: opts.generatedAt, scanVersion: ws.scanVersion, dashboard: dash, ws });
+    for (const p of report.proposals) proposalsByType.set(p.type, p);
+  }
+
+  const targets = index.tools.filter((t) => !opts.only || t.id === opts.only || t.type === opts.only);
+  if (opts.only && targets.length === 0) {
+    // unknown id — report it, change nothing
+    return {
+      index,
+      report: { version: 1, generatedAt: opts.generatedAt, targetProjectId: project.id, targetPath: project.targetPath, projectFreshness: opts.freshnessReport.projectFreshness, outcomes: [], stillStale: [], summary: `No generated tool matches \`${opts.only}\`.` },
+    };
+  }
+
+  const newTools = [...index.tools];
+  for (const old of targets) {
+    const fr = freshById.get(old.id);
+    // Block regeneration when a re-scan is needed (index is behind the target).
+    if (fr && fr.needsRescan && ws) {
+      outcomes.push({ toolId: old.id, type: old.type, title: old.title, status: "stale-needs-rescan", reasons: ["source files changed but the stored scan is behind — re-scan the target first (`scan --target`), then regenerate.", ...fr.reasons.slice(0, 2)], knownUnknownsAdded: [], knownUnknownsResolved: [] });
+      stillStale.push(old.id);
+      continue;
+    }
+    if (!ws) {
+      outcomes.push({ toolId: old.id, type: old.type, title: old.title, status: "stale-needs-rescan", reasons: ["no stored scan — run `scan --target` first."], knownUnknownsAdded: [], knownUnknownsResolved: [] });
+      stillStale.push(old.id);
+      continue;
+    }
+    const proposal = proposalsByType.get(old.type);
+    if (!proposal) {
+      // The signal that justified this tool is gone (e.g. routes removed).
+      outcomes.push({ toolId: old.id, type: old.type, title: old.title, status: "skipped", reasons: ["the project no longer yields this tool's proposal (its signal disappeared); leaving the existing spec in place — review or remove it."], knownUnknownsAdded: [], knownUnknownsResolved: [] });
+      stillStale.push(old.id);
+      continue;
+    }
+    const fresh = generateTool({ generatedAt: opts.generatedAt, scanVersion: ws.scanVersion, ws, proposal, freshness: opts.freshnessReport.projectFreshness === "fresh" ? "fresh" : opts.freshnessReport.projectFreshness === "stale" ? "known-stale" : opts.freshnessReport.projectFreshness === "possibly-stale" ? "potentially-stale" : "unverified", scanBaseCommit: opts.scanBaseCommit });
+    if (!fresh) {
+      outcomes.push({ toolId: old.id, type: old.type, title: old.title, status: "skipped", reasons: ["not generatable from the current index."], knownUnknownsAdded: [], knownUnknownsResolved: [] });
+      continue;
+    }
+    // diff: material change?
+    const changed = fresh.proposalSignature !== old.proposalSignature || fresh.generatorVersion !== old.generatorVersion || (fr && fr.verdict !== "fresh");
+    const oldU = new Set(old.knownUnknowns.map((u) => u.id));
+    const newU = new Set(fresh.knownUnknowns.map((u) => u.id));
+    const added = [...newU].filter((id) => !oldU.has(id));
+    const resolved = [...oldU].filter((id) => !newU.has(id));
+    const idx = newTools.findIndex((x) => x.id === old.id);
+    if (idx >= 0) newTools[idx] = fresh;
+    outcomes.push({
+      toolId: old.id,
+      type: old.type,
+      title: old.title,
+      status: changed ? "updated" : "unchanged",
+      reasons: changed ? ["regenerated from the current stored intelligence."] : ["re-checked; no material change."],
+      confidenceBefore: old.confidence as Confidence,
+      confidenceAfter: fresh.confidence,
+      knownUnknownsAdded: added,
+      knownUnknownsResolved: resolved,
+    });
+  }
+
+  const updated = outcomes.filter((o) => o.status === "updated").length;
+  const summary =
+    `${updated} tool(s) updated, ${outcomes.filter((o) => o.status === "unchanged").length} unchanged, ` +
+    `${stillStale.length} still stale (blocked on re-scan or signal gone). Project freshness: ${opts.freshnessReport.projectFreshness}. ` +
+    "Host-side specs only — the target was not modified.";
+
+  return {
+    index: { ...index, generatedAt: opts.generatedAt, tools: newTools },
+    report: { version: 1, generatedAt: opts.generatedAt, targetProjectId: project.id, targetPath: project.targetPath, projectFreshness: opts.freshnessReport.projectFreshness, outcomes, stillStale, summary },
+  };
+}

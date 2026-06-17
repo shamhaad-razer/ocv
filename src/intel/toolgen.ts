@@ -56,6 +56,95 @@ export function isGeneratable(type: ToolType): boolean {
   return GENERATABLE.includes(type);
 }
 
+/**
+ * Generator version — bump when the spec shape or a builder changes materially, so
+ * stale detection can invalidate older specs (prompt 47 req #1). Independent of
+ * SCAN_VERSION (which tracks the index format).
+ */
+export const GENERATOR_VERSION = "1.0.0";
+
+/**
+ * Which project-intelligence ARTIFACT kinds each tool's data derives from
+ * (freshness.ts ArtifactKind values). Drift the freshness engine reports in any of
+ * these → the tool is stale (prompt 47 req #2/#3).
+ */
+const TOOL_ARTIFACT_DEPS: Record<ToolType, string[]> = {
+  "command-dashboard": ["command-book"],
+  "route-explorer": ["repo-map", "explanation-cache"],
+  "api-explorer": ["repo-map", "explanation-cache"],
+  "service-map-viewer": ["repo-map"],
+  "deployment-explorer": ["deployment-explanation"],
+  "env-var-explorer": ["onboarding-docs", "deployment-explanation"],
+  "flow-explorer": ["known-flows"],
+  "change-impact-viewer": ["confidence-report"],
+  "test-runner-guide": ["command-book"],
+  "service-health-dashboard": ["deployment-explanation"],
+  "known-unknowns-tracker": ["repo-map"],
+  "setup-checker": ["command-book", "onboarding-docs"],
+  "repo-mirroring-panel": ["repo-map", "command-book"],
+};
+
+/** Map a tool type to which index finding-arrays its data files come from. */
+function sourceFilesForType(type: ToolType, ws: WorkspaceIntel): { repo: string; ref: string; hash: string }[] {
+  const out: { repo: string; ref: string; hash: string }[] = [];
+  const seen = new Set<string>();
+  const add = (repo: string, fhs: { ref: string; hash: string }[]) => {
+    for (const fh of fhs) {
+      const k = `${repo}:${fh.ref}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push({ repo, ref: fh.ref, hash: fh.hash });
+    }
+  };
+  for (const repo of ws.repos) {
+    switch (type) {
+      case "command-dashboard":
+      case "test-runner-guide":
+      case "setup-checker":
+        add(repo.name, repo.packageFiles.flatMap((f) => f.grounding.fileHashes));
+        add(repo.name, repo.scripts.flatMap((f) => f.grounding.fileHashes));
+        break;
+      case "route-explorer":
+      case "api-explorer":
+        add(repo.name, repo.routes.flatMap((f) => f.grounding.fileHashes));
+        break;
+      case "env-var-explorer":
+        add(repo.name, repo.envVars.flatMap((f) => f.grounding.fileHashes));
+        add(repo.name, repo.envFiles.flatMap((f) => f.grounding.fileHashes));
+        break;
+      case "deployment-explorer":
+      case "service-map-viewer":
+      case "service-health-dashboard":
+        add(repo.name, repo.deployFiles.flatMap((f) => f.grounding.fileHashes));
+        add(repo.name, repo.services.flatMap((f) => f.grounding.fileHashes));
+        break;
+      case "flow-explorer":
+        // flow rests on each repo's manifest (package deps) + env/port signals
+        add(repo.name, repo.packageFiles.flatMap((f) => f.grounding.fileHashes));
+        add(repo.name, repo.envVars.flatMap((f) => f.grounding.fileHashes));
+        break;
+      default:
+        // known-unknowns/change-impact: repo-level grounding
+        add(repo.name, repo.grounding.fileHashes);
+    }
+  }
+  return out.slice(0, 60);
+}
+
+/**
+ * A stable signature of the PROPOSAL's material content (type + confidence +
+ * data sources + the counts embedded in its title/description). If a re-detected
+ * proposal's signature differs, the tool changed materially → stale.
+ */
+export function proposalSignature(p: ToolProposal): string {
+  const counts = (p.title + " " + p.description).match(/\((\d+)\)|\b(\d+)\b/g)?.join(",") ?? "";
+  const basis = [p.type, p.confidence, p.requiredDataSources.slice().sort().join("|"), counts].join("::");
+  // tiny non-crypto hash (djb2) — deterministic + dependency-free
+  let h = 5381;
+  for (let i = 0; i < basis.length; i++) h = ((h << 5) + h + basis.charCodeAt(i)) >>> 0;
+  return `sig_${h.toString(16)}`;
+}
+
 const STALE: FreshnessStatus[] = ["potentially-stale", "known-stale"];
 
 /**
@@ -139,6 +228,9 @@ export function generateTool(opts: ToolGenOptions): GeneratedToolSpec | null {
     actions,
     dataSources: p.requiredDataSources,
     sources: dedupeRefs([...p.evidence, ...sources]),
+    dependsOnArtifacts: TOOL_ARTIFACT_DEPS[p.type] ?? ["repo-map"],
+    sourceFileHashes: sourceFilesForType(p.type, ws),
+    proposalSignature: proposalSignature(p),
     confidence: p.confidence,
     freshness: opts.freshness,
     stale,
@@ -149,6 +241,7 @@ export function generateTool(opts: ToolGenOptions): GeneratedToolSpec | null {
     generatedAt: opts.generatedAt,
     scanVersion: opts.scanVersion,
     scanBaseCommit: opts.scanBaseCommit ?? null,
+    generatorVersion: GENERATOR_VERSION,
   };
 }
 

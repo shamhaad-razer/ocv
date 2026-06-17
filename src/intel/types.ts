@@ -1260,6 +1260,24 @@ export interface GeneratedToolSpec {
   dataSources: string[];
   /** Source references the tool's data rests on. */
   sources: SourceRef[];
+  // ----- dependency tracking for auto-update (prompt 47) -----
+  /**
+   * Project-intelligence ARTIFACT kinds this tool's data derives from
+   * (freshness.ts ArtifactKind values, e.g. "command-book", "deployment-explanation").
+   * Drift in any of these → the tool is stale.
+   */
+  dependsOnArtifacts: string[];
+  /**
+   * Source files (target-relative) this tool's data rests on, with the content
+   * hash recorded at generation time. Stale detection re-hashes these.
+   */
+  sourceFileHashes: { repo: string; ref: string; hash: string }[];
+  /**
+   * A signature of the PROPOSAL this tool was generated from (type + confidence +
+   * data sources + key counts). If the re-detected proposal's signature differs,
+   * the tool changed materially and is stale.
+   */
+  proposalSignature: string;
   confidence: Confidence;
   freshness: FreshnessStatus | "unknown";
   /** True when the index this was built from looks stale → UI must warn. */
@@ -1275,6 +1293,77 @@ export interface GeneratedToolSpec {
   /** Engine version + base commit of the intel this was generated from. */
   scanVersion: string;
   scanBaseCommit: string | null;
+  /** Generator version (bumping it invalidates all specs — generator changed). */
+  generatorVersion: string;
+}
+
+// ----- Generated-tool freshness / auto-update (prompt 47) -----
+
+/** Project-level freshness verdict (mirrors freshness.ts FreshnessVerdict). */
+export type FreshnessVerdict = "fresh" | "possibly-stale" | "stale" | "unknown";
+
+/** Why a generated tool is (or isn't) current. */
+export type ToolFreshnessVerdict = "fresh" | "stale" | "possibly-stale" | "needs-rescan" | "unknown";
+
+/** Per-tool freshness result. */
+export interface ToolFreshness {
+  toolId: string;
+  type: ToolType;
+  title: string;
+  verdict: ToolFreshnessVerdict;
+  /** Human reasons for the verdict. */
+  reasons: string[];
+  /** Source files (the tool depended on) that changed since generation. */
+  changedFiles: { repo: string; ref: string }[];
+  /** Artifact deps that the project's freshness says are affected. */
+  affectedArtifacts: string[];
+  /** True if the tool can be regenerated NOW from already-scanned intel. */
+  canAutoUpdate: boolean;
+  /** True if a target re-scan is required before regeneration is meaningful. */
+  needsRescan: boolean;
+}
+
+/** The freshness report across all of a target's generated tools. */
+export interface ToolFreshnessReport {
+  version: 1;
+  generatedAt: number;
+  targetProjectId: string;
+  targetPath: string;
+  /** Overall project freshness verdict (from the freshness engine). */
+  projectFreshness: FreshnessVerdict;
+  tools: ToolFreshness[];
+  /** Whether a re-scan is recommended before regenerating (project drifted). */
+  rescanRecommended: boolean;
+  summary: string;
+}
+
+/** Per-tool outcome of a regeneration pass (prompt 47 §7). */
+export interface ToolRegenOutcome {
+  toolId: string;
+  type: ToolType;
+  title: string;
+  /** "updated" = spec rewritten; "unchanged" = no material change; "stale-needs-rescan" = blocked on re-scan; "skipped". */
+  status: "updated" | "unchanged" | "stale-needs-rescan" | "skipped";
+  reasons: string[];
+  /** Confidence before → after (when updated). */
+  confidenceBefore?: Confidence;
+  confidenceAfter?: Confidence;
+  /** Known-unknown ids added / resolved by the regeneration. */
+  knownUnknownsAdded: string[];
+  knownUnknownsResolved: string[];
+}
+
+/** The regeneration report (prompt 47 §7). */
+export interface ToolRegenReport {
+  version: 1;
+  generatedAt: number;
+  targetProjectId: string;
+  targetPath: string;
+  projectFreshness: FreshnessVerdict;
+  outcomes: ToolRegenOutcome[];
+  /** Tools still stale after the pass (e.g. blocked on a re-scan). */
+  stillStale: string[];
+  summary: string;
 }
 
 /** The set of generated tools stored for one target (host-side index). */
