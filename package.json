@@ -20,6 +20,7 @@
     "report": "node build-scan.mjs && node dist-scan/cli.mjs report",
     "verify": "node build-scan.mjs && node dist-scan/cli.mjs verify",
     "targets": "node build-scan.mjs && node dist-scan/cli.mjs targets",
+    "freshness": "node build-scan.mjs && node dist-scan/cli.mjs freshness",
     "test": "vitest run"
   },
   "openclaw": {

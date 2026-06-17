@@ -173,6 +173,8 @@ export interface RepoIntel {
   gitBranch: string | null;
   gitCommit: string | null;
   isGitRepo: boolean;
+  /** Working tree dirty/clean at scan time (null=unknown/non-git). */
+  gitDirty?: boolean | null;
   languages: string[];
   coverage: ScanCoverage;
   importantDirs: Finding<string>[];

@@ -21,7 +21,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { hashFile, SCAN_VERSION } from "./grounding.js";
+import { hashFile, readGitInfo, SCAN_VERSION } from "./grounding.js";
 import { scanRepo } from "./scanner.js";
 import { renderWorkspaceMarkdown, renderDiffMarkdown } from "./render.js";
 import { compareWorkspaces, hasChanges } from "./compare.js";
@@ -38,6 +38,7 @@ import { buildChangeReport } from "./change.js";
 import { mergeVerificationStores, runVerification } from "./verify.js";
 import { renderMachineEnv, renderChangeReportMarkdown } from "./render.js";
 import { ProjectStorage, hostStorageDir } from "./storage.js";
+import { computeFreshness } from "./freshness.js";
 import {
   loadRegistry,
   recordScan,
@@ -50,7 +51,7 @@ import {
 import type { ExplainRequest, KnownUnknown, VerificationStore, WorkspaceIntel } from "./types.js";
 
 interface Args {
-  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets";
+  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness";
   /** Resolved absolute path of the TARGET PROJECT being studied (read-only). */
   targetPath: string;
   /** Whether the user explicitly supplied --target/--root (vs the legacy default). */
@@ -84,7 +85,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
+  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets", "freshness"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const positionals: string[] = [];
@@ -611,7 +612,8 @@ function runTargets(args: Args, now: number): void {
     for (const p of reg.projects) {
       const scanned = p.lastScannedAt ? new Date(p.lastScannedAt).toISOString() : "never";
       const ku = p.knownUnknownsSummary ? `${p.knownUnknownsSummary.total} unknowns` : "—";
-      console.log(`  ${p.id}  ${p.displayName}  [${p.repoType}]  scanned:${scanned}  ${ku}`);
+      const fr = p.freshness ? `freshness:${p.freshness.overall}` : "freshness:unchecked";
+      console.log(`  ${p.id}  ${p.displayName}  [${p.repoType}]  scanned:${scanned}  ${fr}  ${ku}`);
       console.log(`        ${p.targetPath}`);
     }
     return;
@@ -652,6 +654,61 @@ function runTargets(args: Args, now: number): void {
   process.exit(1);
 }
 
+/**
+ * Freshness check (prompt 28): compare a stored scan against the target's CURRENT
+ * state and report fresh / possibly-stale / stale / unknown, which file
+ * categories drifted, and which generated artifacts are now suspect. READ-ONLY —
+ * it only hashes files + reads git in the target; it never writes to the target.
+ * Persists the verdict into the registry so `targets list` reflects it.
+ */
+function runFreshness(args: Args): void {
+  const jsonPath = join(args.out, "project-intel.json");
+  if (!existsSync(jsonPath)) {
+    console.error(`[freshness] no scan at ${jsonPath} for \`${args.targetPath}\` — run \`scan --target <path>\` first`);
+    process.exit(1);
+  }
+  const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
+
+  const result = computeFreshness(
+    ws,
+    (repoRoot, rel) => hashFile(join(repoRoot, rel)),
+    (repoRoot) => {
+      const g = readGitInfo(repoRoot);
+      return { commit: g.commit, dirty: g.dirty };
+    },
+  );
+
+  console.log(`[freshness] target: ${result.targetPath}`);
+  console.log(`[freshness] OVERALL: ${result.overall.toUpperCase()}`);
+  for (const r of result.repos) {
+    console.log(`[freshness] ${r.repo}: ${r.verdict}${r.scanCommit ? ` (scan ${r.scanCommit}${r.currentCommit && r.currentCommit !== r.scanCommit ? ` → now ${r.currentCommit}` : ""})` : ""}`);
+    for (const reason of r.reasons) console.log(`            · ${reason}`);
+    if (r.driftedFiles.length) {
+      console.log(`            drifted: ${r.driftedFiles.slice(0, 8).map((d) => `${d.path} [${d.category}]`).join(", ")}${r.driftedFiles.length > 8 ? `, +${r.driftedFiles.length - 8} more` : ""}`);
+    }
+    if (r.affectedArtifacts.length) {
+      console.log(`            ⚠ possibly-affected artifacts: ${r.affectedArtifacts.join(", ")}`);
+    }
+  }
+
+  // Persist the verdict into the registry entry (host metadata only).
+  const reg = loadRegistry();
+  const entry = resolveTarget(reg, args.targetPath);
+  if (entry) {
+    entry.freshness = { overall: result.overall, checkedAt: Date.now() };
+    saveRegistry(reg);
+  }
+
+  if (result.overall === "stale") {
+    console.log(`[freshness] stored intelligence is STALE — re-scan with: scan --target ${entry?.id ?? args.targetPath}`);
+    process.exit(2);
+  } else if (result.overall === "possibly-stale") {
+    console.log(`[freshness] stored intelligence MAY be stale — consider re-scanning.`);
+    process.exit(2);
+  }
+  console.log(`[freshness] stored intelligence is fresh.`);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now(); // injected here at the edge ONLY
@@ -663,6 +720,7 @@ async function main(): Promise<void> {
   else if (args.cmd === "report") runReport(args, now);
   else if (args.cmd === "verify") await runVerify(args, now);
   else if (args.cmd === "targets") runTargets(args, now);
+  else if (args.cmd === "freshness") runFreshness(args);
   else await runScan(args, now);
 }
 

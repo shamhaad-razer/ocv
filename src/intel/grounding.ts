@@ -51,16 +51,20 @@ export interface GitInfo {
   isGitRepo: boolean;
   branch: string | null;
   commit: string | null;
+  /** Working tree state at read time: true=uncommitted changes, false=clean, null=unknown/non-git. */
+  dirty: boolean | null;
 }
 
-/** Read current branch + short commit. Honest about non-git dirs. */
+/** Read current branch + short commit + dirty/clean status. Honest about non-git dirs. */
 export function readGitInfo(repoRoot: string): GitInfo {
   const inside = git(repoRoot, ["rev-parse", "--is-inside-work-tree"]);
-  if (inside !== "true") return { isGitRepo: false, branch: null, commit: null };
+  if (inside !== "true") return { isGitRepo: false, branch: null, commit: null, dirty: null };
+  const porcelain = git(repoRoot, ["status", "--porcelain"]);
   return {
     isGitRepo: true,
     branch: git(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]),
     commit: git(repoRoot, ["rev-parse", "--short", "HEAD"]),
+    dirty: porcelain === null ? null : porcelain.trim().length > 0,
   };
 }
 

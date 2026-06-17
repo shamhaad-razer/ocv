@@ -507,6 +507,7 @@ export function scanRepo(repoRoot: string, opts: ScanOptions): RepoIntel {
     gitBranch: git.branch,
     gitCommit: git.commit,
     isGitRepo: git.isGitRepo,
+    gitDirty: git.dirty,
     languages: [...langSet].sort(),
     coverage,
     importantDirs,

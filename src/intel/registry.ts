@@ -44,6 +44,8 @@ export interface TargetProject {
   description?: string;
   /** Count of open known-unknowns at last scan (quick health signal). */
   knownUnknownsSummary: { total: number; byImpact: { high: number; medium: number; low: number } } | null;
+  /** Last freshness check verdict (set by `freshness`), host metadata only. */
+  freshness?: { overall: "fresh" | "possibly-stale" | "stale" | "unknown"; checkedAt: number };
 }
 
 export interface Registry {
@@ -153,6 +155,8 @@ export function recordScan(
   entry.lastScannedAt = now;
   entry.lastCommits = lastCommits;
   entry.knownUnknownsSummary = knownUnknownsSummary;
+  // A fresh scan resets the freshness verdict — the index now matches the target.
+  entry.freshness = { overall: "fresh", checkedAt: now };
 }
 
 /** Resolve a registry reference (id OR displayName OR absolute path) to an entry. */
