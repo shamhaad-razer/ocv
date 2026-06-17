@@ -92,6 +92,7 @@ export interface DetectedScript {
     | "deploy"
     | "docker"
     | "database"
+    | "inspect"
     | "other";
 }
 
@@ -302,6 +303,7 @@ export interface WorkspaceDiff {
 /** The categories the command book groups by (07-...md §0). */
 export type CommandCategory =
   | "install"
+  | "setup"
   | "dev"
   | "build"
   | "test"
@@ -309,6 +311,7 @@ export type CommandCategory =
   | "deploy"
   | "docker"
   | "database"
+  | "inspect"
   | "uncategorized";
 
 /**
@@ -331,6 +334,19 @@ export interface CommandBookEntry {
   /** Whether this command has been executed/verified (always false in this MVP). */
   runtimeVerified: boolean;
   verification: Verification;
+  // ----- safety / risk classification (prompt 31, shared with verify.ts) -----
+  /** Safety class: safe to run automatically / needs confirmation / never auto-run. */
+  safety: "safe-auto" | "confirm-required" | "blocked";
+  /** True if the command is read-only/idempotent and safe to run without asking. */
+  safeToRunAutomatically: boolean;
+  /** True if running it requires explicit user confirmation. */
+  confirmationRequired: boolean;
+  /** True if it may modify the target project or local machine (install/build/migrate/etc.). */
+  mayModify: boolean;
+  /** One-line reason for the classification (shown to the user). */
+  safetyReason: string;
+  /** Environment assumptions the command makes (tools it needs, e.g. "uv", "docker"). */
+  envAssumptions: string[];
 }
 
 /** The full command book across all repos, grouped + with the gaps it knows about. */

@@ -85,6 +85,8 @@ export function categorizeScript(name: string, command: string): DetectedScript[
   if (/\bdocker\b/.test(hay)) return "docker";
   if (/\b(migrate|migration|seed|db)\b/.test(hay)) return "database";
   if (/\b(setup|init|prepare)\b/.test(hay)) return "setup";
+  // read-only / inspection commands (status/list/show/version/ps/logs/--help)
+  if (/\b(status|list|ls|show|info|inspect|ps|logs|version|--version|--help|-h|check|diff|describe)\b/.test(hay)) return "inspect";
   return "other";
 }
 

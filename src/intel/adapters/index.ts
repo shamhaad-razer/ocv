@@ -15,9 +15,10 @@ import { nodeAdapter } from "./node.js";
 import { pythonAdapter } from "./python.js";
 import { makeAdapter } from "./make.js";
 import { goAdapter, rustAdapter } from "./manifest.js";
+import { extraCommandsAdapter } from "./extra.js";
 
-/** Language/framework adapters, in priority order. Make is cross-cutting. */
-export const ADAPTERS: Adapter[] = [nodeAdapter, pythonAdapter, goAdapter, rustAdapter, makeAdapter];
+/** Language/framework adapters, in priority order. Make + extra are cross-cutting. */
+export const ADAPTERS: Adapter[] = [nodeAdapter, pythonAdapter, goAdapter, rustAdapter, makeAdapter, extraCommandsAdapter];
 
 /** Adapters that establish a project's *type* (vs. the cross-cutting `make`). */
 const TYPE_ADAPTERS = new Set(["node", "python", "go", "rust"]);

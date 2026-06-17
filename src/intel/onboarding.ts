@@ -24,6 +24,7 @@ import type {
   WorkspaceIntel,
 } from "./types.js";
 import { deriveSetupCompatibility } from "./env.js";
+import { classifyCommand } from "./verify.js";
 
 // ---------- badges (shared style with render.ts) ----------
 
@@ -58,18 +59,43 @@ function toCommandCategory(c: DetectedScript["category"]): CommandCategory {
     case "dev-server":
       return "dev";
     case "install":
+    case "setup":
     case "build":
     case "test":
     case "lint":
     case "deploy":
     case "docker":
     case "database":
+    case "inspect":
       return c;
-    case "setup":
-      return "install"; // setup steps are part of getting installed/running
     default:
       return "uncategorized";
   }
+}
+
+/**
+ * Does a command modify the target project or local machine? (install deps,
+ * build artifacts, migrate DBs, format/codegen, start services, push/deploy).
+ * Used to populate `mayModify` — conservative: when unsure for a non-read-only
+ * category, assume it may write.
+ */
+function commandMayModify(command: string, category: CommandCategory): boolean {
+  if (category === "inspect") return false;
+  if (/\b(--version|--help|-h|\bstatus\b|\blist\b|\bshow\b|\bps\b|\blogs\b)\b/.test(command)) return false;
+  // install/build/deploy/docker/database/dev all create files, processes, or state.
+  return true;
+}
+
+/** Tools a command assumes are installed (drives env-assumption surfacing). */
+function envAssumptionsFor(command: string): string[] {
+  const first = command.trim().replace(/^\.\//, "").split(/\s+/)[0];
+  const map: Record<string, string> = {
+    npm: "node", npx: "node", pnpm: "pnpm", yarn: "yarn", node: "node",
+    python: "python", python3: "python", pip: "python", uv: "uv", poetry: "poetry",
+    pytest: "python", ruff: "python", go: "go", cargo: "rust", make: "make",
+    just: "just", docker: "docker", "docker-compose": "docker", bash: "bash", sh: "sh",
+  };
+  return map[first] ? [map[first]] : [];
 }
 
 /** Build the cross-repo command book from the scanned scripts (grounded). */
@@ -80,9 +106,13 @@ export function buildCommandBook(ws: WorkspaceIntel): CommandBook {
   for (const repo of ws.repos) {
     for (const s of repo.scripts) {
       const g = s.grounding;
+      const category = toCommandCategory(s.value.category);
+      // Reuse the SAME safety classifier the verify command uses (single source
+      // of truth) so the book and the runner never disagree.
+      const { classification, reason } = classifyCommand(s.value.command);
       entries.push({
         repo: repo.name,
-        category: toCommandCategory(s.value.category),
+        category,
         command: s.value.command,
         name: s.value.name,
         sourceFile: s.value.source,
@@ -92,6 +122,12 @@ export function buildCommandBook(ws: WorkspaceIntel): CommandBook {
         // No command is ever executed in this MVP — honesty: not runtime-verified.
         runtimeVerified: g.verification === "runtime-verified",
         verification: g.verification,
+        safety: classification,
+        safeToRunAutomatically: classification === "safe-auto",
+        confirmationRequired: classification === "confirm-required",
+        mayModify: classification === "blocked" || commandMayModify(s.value.command, category),
+        safetyReason: reason,
+        envAssumptions: envAssumptionsFor(s.value.command),
       });
     }
     // Surface command-relevant gaps from this repo's known-unknowns.
@@ -112,15 +148,24 @@ export function buildCommandBook(ws: WorkspaceIntel): CommandBook {
 
 const CATEGORY_ORDER: CommandCategory[] = [
   "install",
+  "setup",
   "dev",
   "build",
   "test",
   "lint",
+  "inspect",
   "docker",
   "database",
   "deploy",
   "uncategorized",
 ];
+
+/** Safety marker for the command book table. */
+function safetyBadge(e: CommandBookEntry): string {
+  if (e.safety === "blocked") return "🚫 never auto-run";
+  if (e.safety === "safe-auto") return "✅ safe-auto";
+  return "⚠ confirm";
+}
 
 export function renderCommandBookMarkdown(book: CommandBook): string {
   const lines: string[] = [];
@@ -146,11 +191,11 @@ export function renderCommandBookMarkdown(book: CommandBook): string {
       lines.push("");
       continue;
     }
-    lines.push("| repo | name | command | source | confidence | freshness | runtime-verified |");
-    lines.push("|---|---|---|---|---|---|---|");
+    lines.push("| repo | name | command | source | confidence | safety | may modify | env | verified |");
+    lines.push("|---|---|---|---|---|---|---|---|---|");
     for (const e of items) {
       lines.push(
-        `| \`${e.repo}\` | ${e.name} | \`${e.command}\` | \`${e.sourceLocator ?? e.sourceFile}\` | ${confBadge(e.confidence)} | ${freshBadge(e.freshness)} | ${e.runtimeVerified ? "✓" : "✗ not verified"} |`,
+        `| \`${e.repo}\` | ${e.name} | \`${e.command}\` | \`${e.sourceLocator ?? e.sourceFile}\` | ${confBadge(e.confidence)} | ${safetyBadge(e)} | ${e.mayModify ? "yes" : "no"} | ${e.envAssumptions.join(",") || "—"} | ${e.runtimeVerified ? "✓" : "✗"} |`,
       );
     }
     lines.push("");

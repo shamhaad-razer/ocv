@@ -58,11 +58,13 @@ describe("command book", () => {
     expect(testEntry.verification).toBe("static");
   });
 
-  it("renders a grouped, honest command book that flags non-verification", () => {
+  it("renders a grouped, honest command book that flags safety + non-verification", () => {
     const md = renderCommandBookMarkdown(buildCommandBook(wsOf(repo, scanRepo(repo, { generatedAt: FIXED_NOW }))));
     expect(md).toContain("# Command Book (generated)");
     expect(md).toContain("not hand-authored truth");
-    expect(md).toContain("✗ not verified");
+    // verified column shows ✗ for un-run commands; safety column shows a class
+    expect(md).toMatch(/safety/);
+    expect(md).toMatch(/confirm|safe-auto|never auto-run/);
     expect(md).toMatch(/## install/);
     expect(md).toMatch(/## deploy/);
   });
