@@ -47,6 +47,8 @@ const TOOL_PROBES: { name: string; cmd: string; args: string[] }[] = [
   { name: "pnpm", cmd: "pnpm", args: ["--version"] },
   { name: "yarn", cmd: "yarn", args: ["--version"] },
   { name: "python", cmd: "python3", args: ["--version"] },
+  { name: "pip", cmd: "pip3", args: ["--version"] },
+  { name: "poetry", cmd: "poetry", args: ["--version"] },
   { name: "uv", cmd: "uv", args: ["--version"] },
   { name: "docker", cmd: "docker", args: ["--version"] },
   { name: "git", cmd: "git", args: ["--version"] },

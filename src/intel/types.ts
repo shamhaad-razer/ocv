@@ -303,6 +303,44 @@ export interface MachineEnv {
   grounding: Grounding;
 }
 
+// ----- Persistent local environment profile (prompt 39) -----
+
+/** Normalized OS variant the profile distinguishes (drives command compatibility). */
+export type OsVariant = "wsl" | "windows" | "macos" | "linux" | "unknown";
+
+/**
+ * A PERSISTENT, host-side snapshot of the user's local machine (prompt 39) — the
+ * thing that lets OpenClaw "remember if I set up WSL or use native Windows" across
+ * sessions and across target projects. It wraps a detected `MachineEnv` (the safe
+ * read-only probe results) with a normalized OS variant, optional working
+ * directories, and USER OVERRIDES that survive a refresh. Stored in HOST storage,
+ * never inside a target project.
+ */
+export interface EnvironmentProfile {
+  version: 1;
+  /** Normalized OS variant (wsl/windows/macos/linux) — the headline distinction. */
+  osVariant: OsVariant;
+  /** The detected machine environment (tools, shell, ports) — refreshed on demand. */
+  machine: MachineEnv;
+  /** Working directories the user cares about (e.g. where target projects live). */
+  workingDirs: string[];
+  /**
+   * Explicit user overrides that win over detection and PERSIST across refreshes
+   * (req #6 "manually set preferred shell/environment"). E.g. a user on native
+   * Windows whose detection is ambiguous can pin osVariant: "windows".
+   */
+  overrides: {
+    osVariant?: OsVariant;
+    shell?: string;
+    /** Preferred command style, e.g. "posix" | "powershell". */
+    commandStyle?: string;
+  };
+  /** epoch ms the profile was last detected/refreshed. */
+  refreshedAt: number;
+  /** epoch ms the profile (incl. overrides) was last written. */
+  updatedAt: number;
+}
+
 /** A port availability check (opt-in, requires confirmation — may touch the network). */
 export interface PortCheck {
   port: number;

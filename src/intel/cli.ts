@@ -33,12 +33,26 @@ import {
   renderRepoOnboarding,
 } from "./onboarding.js";
 import { detectMachineEnv } from "./env.js";
+import {
+  applyEnvironmentOverride,
+  autoProbes,
+  classifyEnvCheck,
+  commandCompatibility,
+  detectEnvironmentProfile,
+  effectiveOsVariant,
+  effectiveShell,
+  environmentProfilePath,
+  loadEnvironmentProfile,
+  saveEnvironmentProfile,
+  summarizeProfile,
+  type EnvironmentOverrideUpdate,
+} from "./environment.js";
 import { explainSelection, listRepoFiles } from "./explain.js";
 import { buildContextPack } from "./contextpack.js";
 import { buildDeploymentReport } from "./deployment.js";
 import { buildChangeReport } from "./change.js";
 import { mergeVerificationStores, runVerification } from "./verify.js";
-import { renderMachineEnv, renderChangeReportMarkdown } from "./render.js";
+import { renderChangeReportMarkdown } from "./render.js";
 import { ProjectStorage, hostStorageDir } from "./storage.js";
 import { computeFreshness } from "./freshness.js";
 import { buildFlowMap } from "./flowmap.js";
@@ -70,7 +84,7 @@ import {
   type UserPreferences,
 } from "./memory.js";
 import { projectIdFor } from "./storage.js";
-import type { ContextMode, ContextPackRequest, ExplainRequest, KnownUnknown, VerificationStore, WorkspaceIntel } from "./types.js";
+import type { ContextMode, ContextPackRequest, EnvironmentProfile, ExplainRequest, KnownUnknown, MachineEnv, OsVariant, VerificationStore, WorkspaceIntel } from "./types.js";
 
 interface Args {
   cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness" | "prefs" | "memory" | "context" | "deploy";
@@ -302,8 +316,10 @@ async function runScan(args: Args, now: number): Promise<void> {
   const repos = repoNames.map((name) => scanRepo(join(args.targetPath, name), { generatedAt: now }));
 
   // Safe local environment detection (read-only probes only; ports NOT checked
-  // during scan — that's opt-in via `env --check-ports`).
-  const { env, unknowns: envUnknowns } = await detectMachineEnv({ generatedAt: now });
+  // during scan — that's opt-in via `env --check-ports`). Prefer the PERSISTENT
+  // host-side environment profile (prompt 39) so a remembered WSL/Windows choice +
+  // shell override flow into the index without re-detecting every scan.
+  const { env, unknowns: envUnknowns } = await resolveScanEnv(now);
 
   const ws: WorkspaceIntel = {
     rootPath: args.targetPath,
@@ -503,32 +519,155 @@ function runDocs(args: Args, now: number): void {
 }
 
 /**
+ * Apply the profile's effective shell/OS-variant overrides onto a detected
+ * MachineEnv, so the index/command-book reflect the user's REMEMBERED environment
+ * (e.g. a manually-pinned shell) rather than only raw detection (prompt 39).
+ */
+function effectiveMachineEnv(profile: EnvironmentProfile): MachineEnv {
+  const variant = effectiveOsVariant(profile);
+  return {
+    ...profile.machine,
+    shell: effectiveShell(profile),
+    // reflect a user-overridden WSL choice so downstream notes stay correct
+    isWSL: profile.overrides.osVariant ? variant === "wsl" : profile.machine.isWSL,
+  };
+}
+
+/**
+ * Resolve the MachineEnv for a scan: reuse a FRESH persisted profile if present
+ * (carrying user overrides), else detect + persist a new one. Keeps the host-side
+ * profile the single source of truth for "what machine am I on".
+ */
+async function resolveScanEnv(now: number): Promise<{ env: MachineEnv; unknowns: KnownUnknown[] }> {
+  const prev = loadEnvironmentProfile();
+  if (prev) return { env: effectiveMachineEnv(prev), unknowns: [] };
+  const { profile, unknowns } = await detectEnvironmentProfile(now, null);
+  saveEnvironmentProfile(profile);
+  return { env: effectiveMachineEnv(profile), unknowns };
+}
+
+/**
  * Detect the local machine environment and merge it into the last scan (so
  * onboarding docs gain setup-compatibility notes). Safe probes always run; port
  * checks run ONLY when --check-ports is passed (explicit user confirmation).
+ *
+ * `env` subcommands (prompt 39): show | refresh | inspect | set.
  */
 async function runEnv(args: Args, now: number): Promise<void> {
+  const sub = args.subcmd ?? "inspect";
+
+  // ----- `env show`: print the persisted profile WITHOUT re-detecting -----
+  if (sub === "show") {
+    const profile = loadEnvironmentProfile();
+    if (!profile) {
+      console.error("[env] no environment profile yet — run `env refresh` (or `env`) to detect + persist one.");
+      process.exit(1);
+    }
+    printProfile(profile);
+    return;
+  }
+
+  // ----- `env set`: manually pin shell / OS variant / command style (persists) -----
+  if (sub === "set") {
+    const profile = loadEnvironmentProfile();
+    if (!profile) {
+      console.error("[env] no environment profile yet — run `env refresh` first, then `env set`.");
+      process.exit(1);
+    }
+    const update: EnvironmentOverrideUpdate = {};
+    const variant = args.flags.get("os-variant") || args.flags.get("variant");
+    if (variant) {
+      const allowed: OsVariant[] = ["wsl", "windows", "macos", "linux", "unknown"];
+      if (!allowed.includes(variant as OsVariant)) {
+        console.error(`[env] invalid --os-variant "${variant}" (expected: ${allowed.join(", ")})`);
+        process.exit(1);
+      }
+      update.osVariant = variant as OsVariant;
+    }
+    if (args.flags.has("shell")) update.shell = args.flags.get("shell") || undefined;
+    if (args.flags.has("command-style")) update.commandStyle = args.flags.get("command-style") || undefined;
+    if (args.flags.get("working-dir")) update.addWorkingDir = resolve(args.flags.get("working-dir") as string);
+    if (Object.keys(update).length === 0) {
+      console.error("[env] set: nothing to update — pass e.g. --os-variant wsl --shell /bin/zsh --working-dir /path");
+      process.exit(1);
+    }
+    const next = applyEnvironmentOverride(profile, update, now);
+    saveEnvironmentProfile(next);
+    console.log(`[env] updated overrides: ${Object.keys(update).join(", ")}`);
+    printProfile(next);
+    return;
+  }
+
+  // ----- `env check "<command>"`: report whether a command fits this machine -----
+  if (sub === "check") {
+    const profile = loadEnvironmentProfile();
+    if (!profile) {
+      console.error("[env] no environment profile yet — run `env refresh` first.");
+      process.exit(1);
+    }
+    const cmd = args.ref ?? args.flags.get("command") ?? "";
+    if (!cmd) {
+      console.error('[env] usage: env check "<command>"  — e.g. env check "uv run pytest"');
+      process.exit(1);
+    }
+    const compat = commandCompatibility(cmd, profile);
+    const safety = classifyEnvCheck(cmd);
+    console.log(`[env] \`${cmd}\` on a ${effectiveOsVariant(profile)} machine:`);
+    console.log(`  compatibility: ${compat.status} — ${compat.note}`);
+    console.log(`  safety       : ${safety.classification} — ${safety.reason}`);
+    return;
+  }
+
+  // ----- `env refresh` / `env inspect` (default): detect (safe probes) + persist -----
   if (args.checkPorts && args.checkPorts.length) {
     console.log(`[env] --check-ports given: probing ports ${args.checkPorts.join(", ")} (local bind test, no network egress)`);
   }
-  const { env, unknowns } = await detectMachineEnv({ generatedAt: now, checkPorts: args.checkPorts });
-  console.log(renderMachineEnv(env));
+  const prev = loadEnvironmentProfile();
+  const { profile, unknowns } = await detectEnvironmentProfile(now, prev);
+  // carry forward overrides + working dirs (detectEnvironmentProfile already did),
+  // then optionally fold in opt-in port checks for the on-disk machine snapshot.
+  if (args.checkPorts && args.checkPorts.length) {
+    const withPorts = await detectMachineEnv({ generatedAt: now, checkPorts: args.checkPorts });
+    profile.machine.ports = withPorts.env.ports;
+  }
+  saveEnvironmentProfile(profile);
+  printProfile(profile);
+  console.log(`[env] profile persisted → ${environmentProfilePath()} (HOST storage — outside any target)`);
 
-  // If a prior scan exists, merge the env into it + regenerate docs so the
-  // command book/overview pick up setup compatibility.
+  // If a prior scan exists, merge the EFFECTIVE env into it + regenerate docs so the
+  // command book/overview pick up setup compatibility for the remembered machine.
   const jsonPath = join(args.out, "project-intel.json");
   if (existsSync(jsonPath)) {
     const ws = JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel;
-    ws.machineEnv = env;
-    // refresh the env-related workspace unknowns
+    ws.machineEnv = effectiveMachineEnv(profile);
     ws.knownUnknowns = ws.knownUnknowns.filter((u) => u.kind !== "missing-tool" && u.kind !== "unverified-port").concat(unknowns);
     writeFileSync(jsonPath, JSON.stringify(ws, null, 2), "utf-8");
     writeFileSync(join(args.out, "project-map.md"), renderWorkspaceMarkdown(ws), "utf-8");
     writeOnboardingDocs(ws, args.out, now);
     console.log(`[env] merged environment into ${jsonPath} + regenerated docs`);
-  } else {
-    console.log(`[env] no prior scan to merge into — run \`scan\` to persist environment + compatibility`);
   }
+}
+
+/** Print the environment profile (human-readable) with safety + compatibility notes. */
+function printProfile(profile: EnvironmentProfile): void {
+  console.log("[env] Local environment profile (host-side — persists across sessions & projects):");
+  console.log(`  OS variant   : ${effectiveOsVariant(profile)}${profile.overrides.osVariant ? " (user-set override)" : " (detected)"}`);
+  console.log(`  shell        : ${effectiveShell(profile) ?? "unknown"}${profile.overrides.shell ? " (user-set)" : ""}`);
+  console.log(`  arch         : ${profile.machine.arch}`);
+  if (profile.overrides.commandStyle) console.log(`  command style: ${profile.overrides.commandStyle} (user-set)`);
+  if (profile.workingDirs.length) console.log(`  working dirs : ${profile.workingDirs.join(", ")}`);
+  console.log("  tools:");
+  for (const t of profile.machine.tools) {
+    console.log(`    ${t.available ? "✓" : "✗"} ${t.name}${t.version ? ` ${t.version}` : ""}`);
+  }
+  const missing = profile.machine.tools.filter((t) => !t.available).map((t) => t.name);
+  if (missing.length) console.log(`  missing tools: ${missing.join(", ")} — setup checker will flag commands needing these.`);
+  console.log(`  refreshed    : ${new Date(profile.refreshedAt).toISOString()}`);
+  console.log(`  stored at    : ${environmentProfilePath()}  (outside any target project)`);
+  console.log(`  summary      : ${summarizeProfile(profile)}`);
+  const probes = autoProbes();
+  const allSafe = probes.every((p) => p.classification === "safe-auto");
+  console.log(`  auto-run probes: ${probes.length} read-only version checks${allSafe ? ", all classified safe-auto" : ""} (nothing installed, no service started).`);
 }
 
 /**
