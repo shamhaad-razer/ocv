@@ -1181,3 +1181,106 @@ export interface ToolOpportunityReport {
   /** One-paragraph human summary. */
   summary: string;
 }
+
+// ----- Generated Internal Tools (11-...md, prompt 46) -----
+//
+// A generated tool is a SAFE, DECLARATIVE SPEC — never generated code. The UI
+// renders it from a fixed set of section kinds. All data is RESOLVED at generation
+// time from the stored intelligence, so rendering touches neither the target nor
+// the index again.
+
+/** A column-typed table row value (string cells only — safe to render). */
+export type ToolTableRow = string[];
+
+/** One renderable section of a generated tool. Closed set → safe to render. */
+export interface ToolSection {
+  /** Stable key within the tool. */
+  id: string;
+  /** Renderer to use. The UI has a built-in component per kind. */
+  kind: "table" | "list" | "key-value" | "mermaid" | "note" | "actions";
+  title: string;
+  /** Optional one-line caption / help. */
+  caption?: string;
+  /** table: column headers. */
+  columns?: string[];
+  /** table: rows (string cells). */
+  rows?: ToolTableRow[];
+  /** list: bullet items. */
+  items?: string[];
+  /** key-value: ordered pairs. */
+  pairs?: { key: string; value: string }[];
+  /** mermaid: the diagram source. */
+  mermaid?: string;
+  /** note: free text (+ optional severity for styling). */
+  text?: string;
+  severity?: "info" | "warn";
+  /** actions: ids of actions (defined on the spec) shown in this section. */
+  actionIds?: string[];
+}
+
+/**
+ * A runtime action a tool MAY offer (e.g. "run tests"). It is described, never
+ * auto-run; the safety class (shared with verify.ts) gates whether/ how it runs.
+ */
+export interface ToolAction {
+  id: string;
+  label: string;
+  /** The repo the command belongs to (for `verify --target … --run`). */
+  repo?: string;
+  /** The exact command (program + args) — shown to the user, never auto-executed. */
+  command: string;
+  /** Safety class: safe-auto runs read-only; confirm-required needs explicit OK; blocked never runs. */
+  safety: "safe-auto" | "confirm-required" | "blocked";
+  /** Why it's classified this way. */
+  safetyReason: string;
+  /** True if the action requires explicit user confirmation before running. */
+  requiresConfirmation: boolean;
+}
+
+/**
+ * The host-side generated-tool spec (prompt 46). Belongs to OpenClaw, not the
+ * target; stored in HOST storage. Read-only by default — `actions` are described
+ * and safety-gated, never auto-run.
+ */
+export interface GeneratedToolSpec {
+  version: 1;
+  /** Stable id: `gtool:<type>:<projectId>`. */
+  id: string;
+  targetProjectId: string;
+  targetPath: string;
+  title: string;
+  description: string;
+  type: ToolType;
+  interactivity: ToolInteractivity;
+  /** Ordered sections the UI renders top-to-bottom. */
+  sections: ToolSection[];
+  /** Declared (never auto-run) runtime actions, safety-classified. */
+  actions: ToolAction[];
+  /** Which stored intelligence this tool was built from (transparency). */
+  dataSources: string[];
+  /** Source references the tool's data rests on. */
+  sources: SourceRef[];
+  confidence: Confidence;
+  freshness: FreshnessStatus | "unknown";
+  /** True when the index this was built from looks stale → UI must warn. */
+  stale: boolean;
+  /** A one-line warning to show when stale (else empty). */
+  staleWarning: string;
+  knownUnknowns: KnownUnknown[];
+  /** Highest safety class across the tool's actions (safe-auto if none). */
+  safety: "safe-auto" | "confirm-required" | "blocked";
+  /** True if any action needs confirmation. */
+  requiresConfirmation: boolean;
+  generatedAt: number;
+  /** Engine version + base commit of the intel this was generated from. */
+  scanVersion: string;
+  scanBaseCommit: string | null;
+}
+
+/** The set of generated tools stored for one target (host-side index). */
+export interface GeneratedToolsIndex {
+  version: 1;
+  targetProjectId: string;
+  generatedAt: number;
+  tools: GeneratedToolSpec[];
+}

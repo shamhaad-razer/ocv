@@ -52,6 +52,7 @@ import { buildContextPack } from "./contextpack.js";
 import { buildDeploymentReport } from "./deployment.js";
 import { buildDashboard } from "./dashboard.js";
 import { detectToolOpportunities } from "./tooldetect.js";
+import { generateTool, isGeneratable, GENERATABLE } from "./toolgen.js";
 import { buildMirrorReport } from "./mirror.js";
 import { buildChangeReport } from "./change.js";
 import { mergeVerificationStores, runVerification } from "./verify.js";
@@ -1339,20 +1340,8 @@ function runDashboard(args: Args, now: number): void {
   process.stdout.write(JSON.stringify(dashboard, null, 2) + "\n");
 }
 
-/**
- * Tool Opportunity Detector (prompt 45): inspect the STORED intelligence for a
- * registered target and PROPOSE project-specific internal tools worth building
- * (API explorer, command dashboard, flow explorer, …). Read-only; proposals are
- * stored in HOST storage. Never modifies or runs anything against the target.
- *   tools suggest --target <id|name|path> [--json]
- */
-function runTools(args: Args, now: number): void {
-  // subcmd defaults to "suggest" (the only verb for now).
-  const sub = args.subcmd ?? "suggest";
-  if (sub !== "suggest") {
-    console.error(`[tools] unknown subcommand "${sub}" — use: tools suggest --target <id|name|path>`);
-    process.exit(1);
-  }
+/** Shared loader for the tools commands: resolve target + load stored index + env. */
+function loadToolsContext(args: Args, now: number): { entry: import("./registry.js").TargetProject; ws: WorkspaceIntel | null; dashboard: import("./types.js").TargetDashboard; storage: ProjectStorage } {
   const reg = loadRegistry();
   const entry = resolveTarget(reg, args.targetExplicit ? (args.ref ?? args.targetPath) : args.targetPath)
     ?? resolveTarget(reg, args.targetPath);
@@ -1360,7 +1349,6 @@ function runTools(args: Args, now: number): void {
     console.error(`[tools] target not found in the registry — register/scan it first (looked up \`${args.targetPath}\`).`);
     process.exit(1);
   }
-
   const jsonPath = join(args.out, "project-intel.json");
   const ws = existsSync(jsonPath) ? (JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel) : null;
   const profile = loadEnvironmentProfile();
@@ -1373,27 +1361,104 @@ function runTools(args: Args, now: number): void {
         toolsMissing: profile.machine.tools.filter((t) => !t.available).map((t) => t.name),
       }
     : { available: false };
-
   const dashboard = buildDashboard({ generatedAt: now, project: entry, ws, environment });
-  const report = detectToolOpportunities({ generatedAt: now, scanVersion: SCAN_VERSION, dashboard, ws });
-
-  // Persist proposals to HOST storage (never inside the target).
   const storage = new ProjectStorage(args.out, args.local);
-  storage.writeJson("toolProposals", report);
+  return { entry, ws, dashboard, storage };
+}
 
-  if (args.json) {
-    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+/** Read the stored generated-tools index for a target (or an empty one). */
+function loadGeneratedTools(storage: ProjectStorage, targetProjectId: string, now: number): import("./types.js").GeneratedToolsIndex {
+  const idx = storage.readJson<import("./types.js").GeneratedToolsIndex>("generatedTools");
+  if (idx && idx.version === 1) return idx;
+  return { version: 1, targetProjectId, generatedAt: now, tools: [] };
+}
+
+/**
+ * Internal tools (prompts 45/46):
+ *   tools suggest  --target <t>            → detect + propose (prompt 45)
+ *   tools generate --target <t> --tool <type|toolId>  → build a safe spec (prompt 46)
+ *   tools list     --target <t>            → list generated tools
+ *   tools show     --target <t> --tool <type|toolId>  → print one generated spec
+ * Read-only; proposals/specs stored in HOST storage. Never modifies/runs the target.
+ */
+function runTools(args: Args, now: number): void {
+  const sub = args.subcmd ?? "suggest";
+
+  if (sub === "suggest") {
+    const { entry, ws, dashboard, storage } = loadToolsContext(args, now);
+    const report = detectToolOpportunities({ generatedAt: now, scanVersion: SCAN_VERSION, dashboard, ws });
+    storage.writeJson("toolProposals", report);
+    if (args.json) { process.stdout.write(JSON.stringify(report, null, 2) + "\n"); return; }
+    console.error(`[tools] ${entry.displayName} (${entry.id}) — ${report.proposals.length} proposal(s), confidence=${report.confidence}, freshness=${report.freshness}`);
+    console.log(report.summary);
+    for (const p of report.proposals) {
+      const gen = isGeneratable(p.type) ? " — generatable" : "";
+      console.log(`\n• ${p.title}  [${p.type}] (${p.confidence}, ${p.interactivity}${p.requiresConfirmation ? ", needs-confirm" : ""})${gen}`);
+      console.log(`  why:  ${p.whyUseful}`);
+      console.log(`  for:  ${p.userProblem}`);
+    }
+    console.error(`[tools] wrote ${storage.path("toolProposals")} (HOST storage — target not modified)`);
     return;
   }
-  console.error(`[tools] ${entry.displayName} (${entry.id}) — ${report.proposals.length} proposal(s), confidence=${report.confidence}, freshness=${report.freshness}`);
-  console.log(report.summary);
-  for (const p of report.proposals) {
-    console.log(`\n• ${p.title}  [${p.type}] (${p.confidence}, ${p.interactivity}${p.requiresConfirmation ? ", needs-confirm" : ""})`);
-    console.log(`  why:  ${p.whyUseful}`);
-    console.log(`  for:  ${p.userProblem}`);
-    console.log(`  data: ${p.requiredDataSources.join(", ")}`);
+
+  if (sub === "generate") {
+    const { entry, ws, dashboard, storage } = loadToolsContext(args, now);
+    if (!ws) { console.error(`[tools] no scan for \`${entry.displayName}\` — run \`scan --target ${entry.id}\` first.`); process.exit(1); }
+    const report = detectToolOpportunities({ generatedAt: now, scanVersion: SCAN_VERSION, dashboard, ws });
+    const want = args.flags.get("tool") ?? args.ref; // type or toolId
+    // Pick proposals to generate: a specific one, or all generatable ones.
+    let chosen = report.proposals.filter((p) => isGeneratable(p.type));
+    if (want) {
+      chosen = report.proposals.filter((p) => p.type === want || p.id === want || `tool:${p.type}:${entry.id}` === want);
+      if (chosen.length === 0) {
+        console.error(`[tools] no proposal matches \`${want}\`. Generatable types: ${GENERATABLE.join(", ")}. (Run \`tools suggest\` to see proposals.)`);
+        process.exit(1);
+      }
+    }
+    const baseCommit = ws.repos[0]?.gitCommit ?? null;
+    const idx = loadGeneratedTools(storage, entry.id, now);
+    const built: string[] = [];
+    for (const p of chosen) {
+      const spec = generateTool({ generatedAt: now, scanVersion: SCAN_VERSION, ws, proposal: p, freshness: dashboard.freshness, scanBaseCommit: baseCommit });
+      if (!spec) continue; // not generatable (e.g. fallback tracker for an empty project)
+      idx.tools = idx.tools.filter((t) => t.id !== spec.id); // replace prior version
+      idx.tools.push(spec);
+      built.push(spec.id);
+    }
+    idx.generatedAt = now;
+    storage.writeJson("generatedTools", idx);
+    if (args.json) { process.stdout.write(JSON.stringify({ ok: true, generated: built, tools: idx.tools }, null, 2) + "\n"); return; }
+    console.error(`[tools] generated ${built.length} tool(s) for ${entry.displayName}: ${built.join(", ") || "(none generatable)"}`);
+    console.error(`[tools] wrote ${storage.path("generatedTools")} (HOST storage — target not modified)`);
+    for (const t of idx.tools.filter((x) => built.includes(x.id))) {
+      console.log(`\n▸ ${t.title}  [${t.type}]  (${t.confidence}, ${t.freshness}${t.stale ? ", STALE" : ""}, ${t.sections.length} section(s), ${t.actions.length} action(s), safety ${t.safety})`);
+    }
+    return;
   }
-  console.error(`[tools] wrote ${storage.path("toolProposals")} (HOST storage — target not modified)`);
+
+  if (sub === "list") {
+    const { entry, storage } = loadToolsContext(args, now);
+    const idx = loadGeneratedTools(storage, entry.id, now);
+    if (args.json) { process.stdout.write(JSON.stringify(idx, null, 2) + "\n"); return; }
+    console.error(`[tools] ${entry.displayName} (${entry.id}) — ${idx.tools.length} generated tool(s)`);
+    for (const t of idx.tools) console.log(`• ${t.id}  ${t.title}  (${t.confidence}, ${t.freshness}${t.stale ? ", STALE" : ""}, safety ${t.safety})`);
+    if (idx.tools.length === 0) console.log("  (none yet — run `tools generate --target <t>`)");
+    return;
+  }
+
+  if (sub === "show") {
+    const { entry, storage } = loadToolsContext(args, now);
+    const idx = loadGeneratedTools(storage, entry.id, now);
+    const want = args.flags.get("tool") ?? args.ref;
+    if (!want) { console.error("[tools] show: pass --tool <type|toolId>"); process.exit(1); }
+    const t = idx.tools.find((x) => x.id === want || x.type === want || `gtool:${x.type}:${entry.id}` === want);
+    if (!t) { console.error(`[tools] no generated tool matches \`${want}\` — run \`tools list --target ${entry.id}\`.`); process.exit(1); }
+    process.stdout.write(JSON.stringify(t, null, 2) + "\n");
+    return;
+  }
+
+  console.error(`[tools] unknown subcommand "${sub}" — use: suggest | generate | list | show`);
+  process.exit(1);
 }
 
 /**
