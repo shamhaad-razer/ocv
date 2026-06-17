@@ -60,6 +60,8 @@ interface Args {
   out: string;
   /** Whether the user opted into project-local storage (<target>/.openclaw). */
   local: boolean;
+  /** Emit a single JSON object on stdout (machine-readable, for the API). */
+  json: boolean;
   repos?: string[];
   /** check: write invalidated freshness back to the artifact (default true). */
   write: boolean;
@@ -89,7 +91,7 @@ function parseArgs(argv: string[]): Args {
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const positionals: string[] = [];
-  const VALUELESS = new Set(["no-write", "confirm", "local"]);
+  const VALUELESS = new Set(["no-write", "confirm", "local", "json"]);
   for (let i = 1; i < argv.length; i++) {
     if (argv[i].startsWith("--")) {
       const key = argv[i].slice(2);
@@ -136,6 +138,7 @@ function parseArgs(argv: string[]): Args {
     targetExplicit,
     out,
     local,
+    json: bools.has("json"),
     repos,
     write: !bools.has("no-write"),
     checkPorts,
@@ -292,6 +295,28 @@ async function runScan(args: Args, now: number): Promise<void> {
   // Auto-register / refresh this target in the HOST registry (never touches the
   // target — only host metadata). Records repo type, commits, unknowns, time.
   registerScannedTarget(args, ws, now);
+
+  if (args.json) {
+    process.stdout.write(
+      JSON.stringify({
+        ok: true,
+        targetPath: args.targetPath,
+        storageDir: args.out,
+        local: args.local,
+        repos: ws.repos.map((r) => ({
+          name: r.name,
+          languages: r.languages,
+          gitCommit: r.gitCommit,
+          scripts: r.scripts.length,
+          routes: r.routes.length,
+          confidence: r.grounding.confidence,
+          freshness: r.grounding.status,
+          knownUnknowns: r.knownUnknowns.length,
+        })),
+        totalUnknowns,
+      }) + "\n",
+    );
+  }
 }
 
 /** Summarize a workspace's known-unknowns by impact for the registry entry. */
@@ -596,6 +621,10 @@ function runTargets(args: Args, now: number): void {
     const repoNames = repos[0] === "." ? [targetPath.split("/").filter(Boolean).pop() || "."] : repos;
     const entry = upsertTarget(reg, { targetPath, repoType, repos: repoNames, now, displayName: args.name, description: args.desc });
     saveRegistry(reg);
+    if (args.json) {
+      process.stdout.write(JSON.stringify({ ok: true, project: entry }) + "\n");
+      return;
+    }
     console.log(`[targets] registered: ${entry.displayName} (id ${entry.id})`);
     console.log(`[targets]   path: ${entry.targetPath} · type: ${entry.repoType} · repos: ${entry.repos.join(", ")}`);
     console.log(`[targets]   storage: ${entry.storageDir} (host — target not modified)`);
@@ -604,6 +633,10 @@ function runTargets(args: Args, now: number): void {
   }
 
   if (sub === "list") {
+    if (args.json) {
+      process.stdout.write(JSON.stringify({ ok: true, projects: reg.projects }) + "\n");
+      return;
+    }
     if (reg.projects.length === 0) {
       console.log("[targets] no registered projects. Add one: targets add <path>");
       return;
@@ -678,6 +711,20 @@ function runFreshness(args: Args): void {
     },
   );
 
+  // Persist the verdict into the registry entry first (host metadata only).
+  const reg0 = loadRegistry();
+  const entry0 = resolveTarget(reg0, args.targetPath);
+  if (entry0) {
+    entry0.freshness = { overall: result.overall, checkedAt: Date.now() };
+    saveRegistry(reg0);
+  }
+
+  if (args.json) {
+    // Machine-readable: the verdict is IN the payload, so exit 0 regardless.
+    process.stdout.write(JSON.stringify({ ok: true, freshness: result, projectId: entry0?.id ?? null }) + "\n");
+    return;
+  }
+
   console.log(`[freshness] target: ${result.targetPath}`);
   console.log(`[freshness] OVERALL: ${result.overall.toUpperCase()}`);
   for (const r of result.repos) {
@@ -691,16 +738,8 @@ function runFreshness(args: Args): void {
     }
   }
 
-  // Persist the verdict into the registry entry (host metadata only).
-  const reg = loadRegistry();
-  const entry = resolveTarget(reg, args.targetPath);
-  if (entry) {
-    entry.freshness = { overall: result.overall, checkedAt: Date.now() };
-    saveRegistry(reg);
-  }
-
   if (result.overall === "stale") {
-    console.log(`[freshness] stored intelligence is STALE — re-scan with: scan --target ${entry?.id ?? args.targetPath}`);
+    console.log(`[freshness] stored intelligence is STALE — re-scan with: scan --target ${entry0?.id ?? args.targetPath}`);
     process.exit(2);
   } else if (result.overall === "possibly-stale") {
     console.log(`[freshness] stored intelligence MAY be stale — consider re-scanning.`);
