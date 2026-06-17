@@ -539,6 +539,29 @@ export interface RecommendedCommand {
   /** Why it's recommended (e.g. "test command for a repo with code changes"). */
   reason: string;
   runtimeVerified: boolean;
+  /** Safety class from the command book (prompt 31). */
+  safety?: "safe-auto" | "confirm-required" | "blocked";
+  /** Whether running it may modify the target/machine. */
+  mayModify?: boolean;
+}
+
+/** A symbol changed by the diff + where it's referenced (prompt 35, source-grounded). */
+export interface AffectedSymbol {
+  name: string;
+  kind: string;
+  /** "file:line" of the definition. */
+  locator: string;
+  /** Confidence-classified references (the blast radius — inferred). */
+  references: { locator: string; kind: string; confidence: Confidence }[];
+}
+
+/** A cross-repo flow edge touching a changed repo (prompt 35, inferred). */
+export interface FlowImpact {
+  from: string;
+  to: string;
+  kind: string;
+  label: string;
+  confidence: Confidence;
 }
 
 /** Per-repo slice of the change confidence report. */
@@ -550,6 +573,10 @@ export interface RepoChangeReport {
   changedFiles: ChangedFile[];
   /** Counts by change kind, for the summary. */
   summary: { total: number; code: number; config: number; test: number; deploy: number; docs: number; other: number };
+  /** Symbols defined in changed files + their references (the blast radius). */
+  affectedSymbols: AffectedSymbol[];
+  /** Cross-repo flow edges touching this repo (inferred — verify the other side). */
+  flowImpact: FlowImpact[];
   recommendedCommands: RecommendedCommand[];
   /** Findings the report is confident about (directly evidenced). */
   highConfidenceNotes: string[];

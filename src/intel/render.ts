@@ -24,6 +24,10 @@ function confBadge(c: Confidence): string {
   return c === "high" ? "🟢 high" : c === "medium" ? "🟡 medium" : "🔴 low";
 }
 
+function safetyBadge(s: "safe-auto" | "confirm-required" | "blocked"): string {
+  return s === "safe-auto" ? "✅ safe-auto" : s === "confirm-required" ? "⚠️ confirm-required" : "⛔ blocked";
+}
+
 function freshBadge(s: FreshnessStatus): string {
   switch (s) {
     case "fresh":
@@ -320,10 +324,34 @@ function renderRepoChange(r: RepoChangeReport): string {
   }
   lines.push("");
 
+  // --- affected symbols + their references (inferred blast radius) ---
+  if (r.affectedSymbols.length) {
+    lines.push("### Affected symbols → references (INFERRED — text-matched, not a proven call graph)");
+    lines.push("| symbol | defined in | references (callers/usages) |");
+    lines.push("|---|---|---|");
+    for (const s of r.affectedSymbols) {
+      const refs = s.references.length
+        ? s.references.map((ref) => `\`${ref.locator}\` (${ref.kind}, ${confBadge(ref.confidence)})`).join("; ")
+        : "_no references found in this repo_";
+      lines.push(`| \`${s.name}\` (${s.kind}) | \`${s.locator}\` | ${refs} |`);
+    }
+    lines.push("");
+  }
+
+  // --- cross-repo flow impact (inferred edges touching this repo) ---
+  if (r.flowImpact.length) {
+    lines.push("### Cross-repo flow impact (INFERRED — links are hints, not proven calls)");
+    for (const e of r.flowImpact) {
+      lines.push(`- \`${e.from}\` → \`${e.to}\` — ${e.label} (${e.kind}, ${confBadge(e.confidence)})`);
+    }
+    lines.push("");
+  }
+
   lines.push("### Recommended commands (NOT run — recommend only)");
   if (r.recommendedCommands.length) {
     for (const c of r.recommendedCommands) {
-      lines.push(`- **${c.name}** (${c.category}): \`${c.command}\` — ${c.reason} ${c.runtimeVerified ? "" : "· ✗ not verified"}`);
+      const safety = c.safety ? ` · safety: ${safetyBadge(c.safety)}${c.mayModify ? " (may modify files)" : ""}` : "";
+      lines.push(`- **${c.name}** (${c.category}): \`${c.command}\` — ${c.reason} ${c.runtimeVerified ? "" : "· ✗ not verified"}${safety}`);
     }
   } else {
     lines.push("_no commands recommended (none known, or no changes)_");

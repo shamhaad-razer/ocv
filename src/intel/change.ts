@@ -12,12 +12,17 @@
 
 import { buildGrounding, readGitChanges, readGitInfo } from "./grounding.js";
 import { buildCommandBook } from "./onboarding.js";
+import { findReferences } from "./references.js";
+import { listRepoFiles } from "./explain.js";
+import { flowForRepo } from "./flowmap.js";
 import type {
+  AffectedSymbol,
   ChangeConfidenceReport,
   ChangedFile,
   CommandBook,
   Confidence,
   Finding,
+  FlowImpact,
   Grounding,
   KnownUnknown,
   RecommendedCommand,
@@ -72,6 +77,9 @@ function entitiesForFile(repo: RepoIntel, path: string): ChangedFile["affectedEn
   for (const sv of repo.services) {
     if (cites(sv.grounding)) out.push({ kind: "service", label: `${sv.value.name} (${sv.value.kind})`, locator: sv.value.evidence, confidence: sv.grounding.confidence });
   }
+  for (const sym of repo.symbols) {
+    if (sym.value.file === path) out.push({ kind: "symbol", label: `${sym.value.name} (${sym.value.kind})`, locator: sym.value.locator, confidence: sym.grounding.confidence });
+  }
   for (const e of repo.envVars) {
     if (e.value.source === path) out.push({ kind: "env-var", label: e.value.name, locator: e.value.source, confidence: e.grounding.confidence });
   }
@@ -107,7 +115,7 @@ function recommendCommands(
           ? `${reason} — ✓ verified passing (exit ${v.exitCode})`
           : `${reason} — ✗ verified FAILING (exit ${v.exitCode}) — fix before pushing`
         : reason;
-      out.push({ repo: repoName, category: e.category, name: e.name, command: e.command, reason: verifiedReason, runtimeVerified: verified });
+      out.push({ repo: repoName, category: e.category, name: e.name, command: e.command, reason: verifiedReason, runtimeVerified: verified, safety: e.safety, mayModify: e.mayModify });
     }
   };
   // Any code/config/test change → run tests + lint. Deploy change → also flag build.
@@ -142,6 +150,7 @@ function buildRepoReport(
   book: CommandBook,
   now: number,
   verification: VerificationStore | null,
+  flowMap: WorkspaceIntel["flowMap"],
 ): RepoChangeReport {
   const git = readGitInfo(rootPath);
   const changes = readGitChanges(rootPath);
@@ -183,6 +192,42 @@ function buildRepoReport(
     highConfidenceNotes.push(`${summary.total} file(s) changed (git working tree): ${summary.code} code, ${summary.config} config, ${summary.test} test, ${summary.deploy} deploy, ${summary.docs} docs.`);
   } else {
     highConfidenceNotes.push("No working-tree changes detected in this repo.");
+  }
+
+  // --- affected symbols + their references (the blast radius, prompt 35) ---
+  // Symbols defined in changed files; for each, find confidence-classified
+  // references across the repo (call/import = likely callers, mention = low).
+  const affectedSymbols: AffectedSymbol[] = [];
+  if (repoIntel && summary.code > 0) {
+    const changedPaths = new Set(changedFiles.map((f) => f.path));
+    const changedSymbols = repoIntel.symbols.filter((s) => changedPaths.has(s.value.file)).slice(0, 30);
+    const repoFiles = changedSymbols.length ? listRepoFiles(rootPath) : [];
+    for (const sym of changedSymbols) {
+      const refs = findReferences(rootPath, repoFiles, sym.value.name, sym.value.locator).references
+        .filter((r) => r.kind !== "definition") // callers/usages, not the def itself
+        .slice(0, 10);
+      affectedSymbols.push({
+        name: sym.value.name,
+        kind: sym.value.kind,
+        locator: sym.value.locator,
+        references: refs.map((r) => ({ locator: r.locator, kind: r.kind, confidence: r.confidence })),
+      });
+    }
+    if (affectedSymbols.some((s) => s.references.length > 0)) {
+      inferredNotes.push(
+        `Changed symbols are referenced elsewhere (inferred blast radius): ${affectedSymbols.filter((s) => s.references.length).slice(0, 5).map((s) => `${s.name} (${s.references.length} ref)`).join(", ")} — verify these callers.`,
+      );
+      manualReview.push(`Review call sites of changed symbols (references are text-matched, not a proven call graph): ${affectedSymbols.filter((s) => s.references.length).map((s) => s.name).slice(0, 6).join(", ")}.`);
+    }
+  }
+
+  // --- cross-repo flow impact (inferred, prompt 34/35) ---
+  const flowImpact: FlowImpact[] = flowMap
+    ? flowForRepo(flowMap, name).edges.map((e) => ({ from: e.from, to: e.to, kind: e.kind, label: e.label, confidence: e.confidence }))
+    : [];
+  if (flowImpact.length && summary.total > 0) {
+    inferredNotes.push(`This repo has ${flowImpact.length} inferred cross-repo link(s); a change here may affect: ${flowImpact.map((e) => (e.from === name ? e.to : e.from)).slice(0, 4).join(", ")}.`);
+    manualReview.push(`Cross-repo: verify the other side of ${flowImpact.map((e) => `${e.from}→${e.to}`).slice(0, 4).join(", ")} (links are inferred, not proven).`);
   }
 
   // --- affected entities (inferred — index links are heuristic for code files) ---
@@ -251,6 +296,8 @@ function buildRepoReport(
     isGitRepo: git.isGitRepo,
     changedFiles,
     summary,
+    affectedSymbols,
+    flowImpact,
     recommendedCommands,
     highConfidenceNotes,
     inferredNotes,
@@ -284,6 +331,8 @@ function emptyRepoReport(
     isGitRepo: git.isGitRepo,
     changedFiles,
     summary,
+    affectedSymbols: [],
+    flowImpact: [],
     recommendedCommands,
     highConfidenceNotes,
     inferredNotes,
@@ -303,7 +352,7 @@ export function buildChangeReport(ws: WorkspaceIntel, opts: ChangeOptions): Chan
   const verification = opts.verification ?? null;
   const repos: RepoChangeReport[] = roots.map((root) => {
     const intel = ws.repos.find((r) => r.name === root.name);
-    return buildRepoReport(root.name, root.rootPath, intel, book, now, verification);
+    return buildRepoReport(root.name, root.rootPath, intel, book, now, verification, ws.flowMap);
   });
 
   const totalChanged = repos.reduce((n, r) => n + r.summary.total, 0);
