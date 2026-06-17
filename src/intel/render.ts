@@ -14,6 +14,9 @@ import type {
   Grounding,
   KnownUnknown,
   MachineEnv,
+  MirrorFinding,
+  MirrorIntent,
+  MirrorReport,
   RepoChangeReport,
   RepoDeployment,
   RepoIntel,
@@ -599,4 +602,77 @@ function renderRepoDeployment(r: RepoDeployment): string {
     lines.push("");
   }
   return lines.join("\n");
+}
+
+// ---------- Repo Mirroring Assistant (prompt 41) ----------
+
+const INTENT_SECTIONS: { intent: MirrorIntent; title: string }[] = [
+  { intent: "safe-to-align", title: "Safe to align (low risk)" },
+  { intent: "worth-aligning", title: "Worth aligning (medium risk — align the role, not the literal)" },
+  { intent: "high-scrutiny", title: "High scrutiny (CI/deploy — propose with explicit risks)" },
+  { intent: "needs-your-call", title: "Needs your call (ambiguous — align or keep?)" },
+  { intent: "intentionally-kept", title: "Intentionally kept (detected as on-purpose — NOT changing)" },
+  { intent: "out-of-scope", title: "Out of scope (never mirrored: secrets, identity, ecosystem-forced)" },
+];
+
+/** Render the propose-only mirroring report: evidence-linked, risk-sorted, with a dry-run plan. */
+export function renderMirrorReportMarkdown(report: MirrorReport): string {
+  const lines: string[] = [];
+  lines.push("# Repo Mirroring Report (generated)");
+  lines.push("");
+  lines.push("> **PROPOSE-ONLY.** This compares two repos and proposes alignment — it");
+  lines.push("> does **NOT** modify either repo. Nothing is applied without your explicit");
+  lines.push("> approval of an apply step. It aligns by ROLE, never copies blindly, and");
+  lines.push("> never mirrors secrets/identity (S6).");
+  lines.push(`> target \`${report.target.name}\` (${report.target.languages.join(", ") || "?"}) ⇐ source \`${report.source.name}\` (${report.source.languages.join(", ") || "?"})`);
+  lines.push(`> generated: \`${isoUtc(report.generatedAt)}\` · scan version: \`${report.scanVersion}\` · overall confidence: ${confBadge(report.confidence)} · ${report.sameEcosystem ? "same ecosystem" : "⚠ cross-ecosystem"}`);
+  lines.push("");
+
+  lines.push("## Summary");
+  lines.push(report.summary);
+  lines.push("");
+
+  // findings grouped by intent, in the order above (low-risk first).
+  for (const { intent, title } of INTENT_SECTIONS) {
+    const group = report.findings.filter((f) => f.intent === intent);
+    if (group.length === 0) continue;
+    lines.push(`## ${title}`);
+    for (const f of group) lines.push(renderMirrorFinding(f));
+    lines.push("");
+  }
+
+  // dry-run plan
+  lines.push("## Dry-run plan (proposed — NOT applied)");
+  if (report.plan.length === 0) {
+    lines.push("_no changes proposed — the target already covers the comparable source patterns, or differences are intentional/out-of-scope._");
+  } else {
+    lines.push("| # | risk | action | dimension | proposed change |");
+    lines.push("|---|---|---|---|---|");
+    report.plan.forEach((s, i) => {
+      lines.push(`| ${i + 1} | ${riskBadge(s.risk)} | ${s.action} | ${s.dimension} | ${s.description}${s.fromSource ? ` (from \`${s.fromSource}\`)` : ""} |`);
+    });
+  }
+  lines.push("");
+
+  // validation hand-off (change-confidence)
+  lines.push("## Validation steps (run AFTER applying — change-confidence hand-off)");
+  for (const v of report.validation) lines.push(`- ${v}`);
+  lines.push("");
+
+  lines.push("## Known unknowns");
+  lines.push(renderUnknowns(report.knownUnknowns));
+  lines.push("");
+  return lines.join("\n");
+}
+
+function renderMirrorFinding(f: MirrorFinding): string {
+  const srcRef = f.sources.length ? f.sources.map((s) => `\`${s.locator ?? s.ref}\``).join(", ") : "—";
+  const st = `**${f.role}** (${f.dimension}, ${f.status}, ${confBadge(f.confidence)})`;
+  const sv = f.source != null || f.target != null ? ` — source: ${f.source ? `\`${f.source}\`` : "_none_"}, target: ${f.target ? `\`${f.target}\`` : "_none_"}` : "";
+  const risk = f.risk ? ` · **risk:** ${f.risk}` : "";
+  return `- ${st}${sv}\n  - ${f.reason}${risk}\n  - evidence: ${srcRef}`;
+}
+
+function riskBadge(r: "low" | "medium" | "high"): string {
+  return r === "low" ? "🟢 low" : r === "medium" ? "🟡 medium" : "🔴 high";
 }

@@ -1007,3 +1007,96 @@ export interface TargetDashboard {
   /** A one-paragraph human summary the UI can show at the top. */
   summary: string;
 }
+
+// ----- Repo Mirroring Assistant (12-...md, prompt 41) -----
+
+/** The mirrorable dimensions, ordered low→high risk (12-...md §2). */
+export type MirrorDimension =
+  | "conventions"
+  | "scripts"
+  | "structure"
+  | "config"
+  | "ci-cd"
+  | "deployment"
+  | "env"
+  | "docs";
+
+/** How an aligned source/target pair compares (12-...md §1). */
+export type MirrorStatus = "match" | "divergent" | "missing-in-target" | "extra-in-target";
+
+/** The assistant's intent verdict for a finding (12-...md §3). */
+export type MirrorIntent =
+  | "safe-to-align" // low-risk gap-fill / convention
+  | "worth-aligning" // medium-risk; align the role, ripple noted
+  | "high-scrutiny" // infra/CI/deploy; propose with explicit risks
+  | "intentionally-kept" // detected on-purpose difference — do NOT change
+  | "needs-your-call" // ambiguous — ask
+  | "out-of-scope"; // non-mirrorable (secrets, identity, ecosystem-forced)
+
+/**
+ * One comparison finding between source and target, role-aligned, with the
+ * assistant's intent verdict + why (12-...md §3/§4). Never an instruction to copy
+ * blindly — it explains the reasoning and the risk.
+ */
+export interface MirrorFinding {
+  dimension: MirrorDimension;
+  /** The role/key the pair is aligned by (e.g. "test command", "Dockerfile", "tsconfig"). */
+  role: string;
+  status: MirrorStatus;
+  intent: MirrorIntent;
+  /** What source has (file/command/value summary), or null if absent. */
+  source: string | null;
+  /** What target has, or null if absent. */
+  target: string | null;
+  /** Why this verdict — worth-mirroring rationale, intentional-difference reason, or risk. */
+  reason: string;
+  /** What could break if copied blindly (req #4). Empty when safe. */
+  risk: string;
+  confidence: Confidence;
+  /** Source evidence (the source repo file/command this rests on). */
+  sources: SourceRef[];
+}
+
+/** One step of the dry-run plan (req #5). Proposed, never auto-applied. */
+export interface MirrorPlanStep {
+  /** "add-file" | "align-file" | "add-script" | "run-validation". */
+  action: "add-file" | "align-file" | "add-config" | "run-validation";
+  /** Human description of the proposed change (target-relative). */
+  description: string;
+  /** The target path the change would touch (for add/align), if applicable. */
+  targetPath?: string;
+  /** Where the pattern comes from (source evidence). */
+  fromSource?: string;
+  risk: "low" | "medium" | "high";
+  /** Dimension this step belongs to. */
+  dimension: MirrorDimension;
+}
+
+/**
+ * The full mirroring report (12-...md §4). Propose-only: it compares, classifies
+ * intent, and produces a dry-run plan + validation recommendations. It NEVER
+ * modifies either repo. Stored in HOST storage.
+ */
+export interface MirrorReport {
+  version: 1;
+  generatedAt: number;
+  scanVersion: string;
+  /** The source repo (the pattern donor) — read-only. */
+  source: { name: string; path: string; languages: string[] };
+  /** The target repo (the one that would change) — read-only unless user applies. */
+  target: { name: string; path: string; languages: string[] };
+  /** Whether source & target share an ecosystem (drives the ecosystem safety rail). */
+  sameEcosystem: boolean;
+  /** Dimensions that were compared. */
+  dimensions: MirrorDimension[];
+  /** All findings, grouped/sorted by intent in the renderer. */
+  findings: MirrorFinding[];
+  /** The dry-run plan: only the safe/worth/high-scrutiny proposals (req #5). */
+  plan: MirrorPlanStep[];
+  /** Validation checks to run AFTER applying (hand-off to change-confidence, req #7). */
+  validation: string[];
+  confidence: Confidence;
+  knownUnknowns: KnownUnknown[];
+  /** Counts by intent + a one-paragraph human summary. */
+  summary: string;
+}

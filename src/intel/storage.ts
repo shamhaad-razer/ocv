@@ -62,6 +62,8 @@ export const ARTIFACTS = {
   contextPack: "context-pack.json",
   deploymentJson: "deployment-report.json",
   deploymentMd: "deployment-report.md",
+  mirrorJson: "mirror-report.json",
+  mirrorMd: "mirror-report.md",
   docsDir: "docs",
   reportHistoryDir: "report-history",
   contextHistoryDir: "context-history",

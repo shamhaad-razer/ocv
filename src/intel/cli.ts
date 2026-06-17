@@ -51,13 +51,14 @@ import { explainSelection, listRepoFiles } from "./explain.js";
 import { buildContextPack } from "./contextpack.js";
 import { buildDeploymentReport } from "./deployment.js";
 import { buildDashboard } from "./dashboard.js";
+import { buildMirrorReport } from "./mirror.js";
 import { buildChangeReport } from "./change.js";
 import { mergeVerificationStores, runVerification } from "./verify.js";
 import { renderChangeReportMarkdown } from "./render.js";
 import { ProjectStorage, hostStorageDir } from "./storage.js";
 import { computeFreshness } from "./freshness.js";
 import { buildFlowMap } from "./flowmap.js";
-import { renderFlowMapMarkdown, renderDeploymentReportMarkdown } from "./render.js";
+import { renderFlowMapMarkdown, renderDeploymentReportMarkdown, renderMirrorReportMarkdown } from "./render.js";
 import {
   loadRegistry,
   recordScan,
@@ -88,7 +89,7 @@ import { projectIdFor } from "./storage.js";
 import type { ContextMode, ContextPackRequest, EnvironmentProfile, ExplainRequest, KnownUnknown, MachineEnv, OsVariant, VerificationStore, WorkspaceIntel } from "./types.js";
 
 interface Args {
-  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness" | "prefs" | "memory" | "context" | "deploy" | "dashboard";
+  cmd: "scan" | "check" | "diff" | "docs" | "env" | "explain" | "report" | "verify" | "targets" | "freshness" | "prefs" | "memory" | "context" | "deploy" | "dashboard" | "mirror";
   /** Resolved absolute path of the TARGET PROJECT being studied (read-only). */
   targetPath: string;
   /** Whether the user explicitly supplied --target/--root (vs the legacy default). */
@@ -136,7 +137,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets", "freshness", "prefs", "memory", "context", "deploy", "dashboard"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
+  const cmd = (["check", "diff", "docs", "env", "explain", "report", "verify", "targets", "freshness", "prefs", "memory", "context", "deploy", "dashboard", "mirror"].includes(argv[0]) ? argv[0] : "scan") as Args["cmd"];
   const flags = new Map<string, string>();
   const bools = new Set<string>();
   const positionals: string[] = [];
@@ -1315,6 +1316,90 @@ function runDashboard(args: Args, now: number): void {
   process.stdout.write(JSON.stringify(dashboard, null, 2) + "\n");
 }
 
+/**
+ * Resolve a "repo selector" — a ref (registered id/name/path) + an optional repo
+ * name within a multi-repo target — into a scanned RepoIntel (READ-ONLY). Prefers
+ * a stored index; falls back to scanning the path live if none exists. Returns
+ * null with a logged reason if it can't be resolved.
+ */
+function resolveRepoForMirror(label: string, ref: string, repoName: string | undefined, now: number): import("./types.js").RepoIntel | null {
+  const reg = loadRegistry();
+  const hit = resolveTarget(reg, ref);
+  const targetPath = hit ? hit.targetPath : existsSync(ref) ? resolve(ref) : null;
+  if (!targetPath) {
+    console.error(`[mirror] ${label}: \`${ref}\` is not a registered target or an existing path.`);
+    return null;
+  }
+  // Try the stored index first (host storage), so we reuse prior scans.
+  const storageDir = hostStorageDir(targetPath);
+  const jsonPath = join(storageDir, "project-intel.json");
+  let ws: WorkspaceIntel | null = existsSync(jsonPath) ? (JSON.parse(readFileSync(jsonPath, "utf-8")) as WorkspaceIntel) : null;
+  if (!ws) {
+    // No stored scan — scan the repo(s) live (read-only) so mirroring still works.
+    const repoNames = detectRepos(targetPath);
+    const repos = repoNames.map((n) => scanRepo(join(targetPath, n), { generatedAt: now }));
+    ws = { rootPath: targetPath, targetPath, scanVersion: SCAN_VERSION, generatedAt: now, repos, knownUnknowns: [] };
+  }
+  if (ws.repos.length === 0) {
+    console.error(`[mirror] ${label}: no repos found under \`${targetPath}\`.`);
+    return null;
+  }
+  // Pick the repo: explicit --*-repo, else the only repo, else error for multi-repo.
+  if (repoName) {
+    const r = ws.repos.find((x) => x.name === repoName);
+    if (!r) {
+      console.error(`[mirror] ${label}: repo \`${repoName}\` not found in \`${targetPath}\` (have: ${ws.repos.map((x) => x.name).join(", ")}).`);
+      return null;
+    }
+    return r;
+  }
+  if (ws.repos.length === 1) return ws.repos[0];
+  console.error(`[mirror] ${label} is multi-repo — pass --${label}-repo <name> (have: ${ws.repos.map((x) => x.name).join(", ")}).`);
+  return null;
+}
+
+/**
+ * Repo Mirroring Assistant (prompt 41): compare a SOURCE repo and a TARGET repo
+ * (registered ids/names, repos within a multi-repo target, or explicit paths) and
+ * produce a PROPOSE-ONLY mirroring report + dry-run plan + validation hand-off.
+ * READ-ONLY: it never modifies either repo. Report stored in HOST storage.
+ *   mirror --source <ref> --target <ref> [--source-repo R] [--target-repo R] [--json]
+ */
+function runMirror(args: Args, now: number): void {
+  const sourceRef = args.flags.get("source");
+  const targetRef = args.flags.get("target") ?? args.flags.get("root");
+  if (!sourceRef || !targetRef) {
+    console.error('[mirror] usage: mirror --source <id|name|path> --target <id|name|path> [--source-repo R] [--target-repo R] [--json]');
+    process.exit(1);
+  }
+  const source = resolveRepoForMirror("source", sourceRef, args.flags.get("source-repo"), now);
+  const target = resolveRepoForMirror("target", targetRef, args.flags.get("target-repo"), now);
+  if (!source || !target) process.exit(1);
+  if (source.rootPath === target.rootPath && source.name === target.name) {
+    console.error("[mirror] source and target are the same repo — pick two different repos.");
+    process.exit(1);
+  }
+
+  const report = buildMirrorReport(source, target, { generatedAt: now, scanVersion: SCAN_VERSION });
+
+  if (args.json) {
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    return;
+  }
+
+  // Persist the report to the TARGET's HOST storage (never inside either repo).
+  const md = renderMirrorReportMarkdown(report);
+  const tgtHit = resolveTarget(loadRegistry(), targetRef);
+  const outDir = tgtHit ? hostStorageDir(tgtHit.targetPath) : hostStorageDir(target.rootPath);
+  const storage = new ProjectStorage(outDir, false);
+  storage.writeText("mirrorMd", md);
+  storage.writeJson("mirrorJson", report);
+
+  console.error(`[mirror] ${report.summary}`);
+  console.error(`[mirror] wrote ${storage.path("mirrorMd")} + ${storage.path("mirrorJson")} (HOST storage — neither repo modified)`);
+  process.stdout.write(md + "\n");
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now(); // injected here at the edge ONLY
@@ -1332,6 +1417,7 @@ async function main(): Promise<void> {
   else if (args.cmd === "context") runContext(args, now);
   else if (args.cmd === "deploy") runDeploy(args, now);
   else if (args.cmd === "dashboard") runDashboard(args, now);
+  else if (args.cmd === "mirror") runMirror(args, now);
   else await runScan(args, now);
 }
 
