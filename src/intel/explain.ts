@@ -13,7 +13,7 @@
 // working tree, we say so.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { buildGrounding, hashFile } from "./grounding.js";
 import type {
   Confidence,
@@ -221,7 +221,19 @@ export function explainSelection(req: ExplainRequest, ws: WorkspaceIntel, opts: 
     ]);
   }
 
-  const abs = join(repo.rootPath, req.path);
+  // --- SECURITY: reject path traversal outside the target project (prompt 32) ---
+  // Resolve the requested path and confirm it stays within the repo root. An
+  // absolute path or any `../` that escapes the target is refused — OpenClaw must
+  // only ever read inside the selected target.
+  const repoRootResolved = resolve(repo.rootPath);
+  const abs = resolve(repoRootResolved, req.path);
+  const within = abs === repoRootResolved || abs.startsWith(repoRootResolved + sep);
+  if (!within) {
+    return emptyPackage(req, now, ws, `refused: path \`${req.path}\` resolves outside the target project`, [
+      mkUnknown("other", "path traversal rejected", `\`${req.path}\` would escape the target project root; OpenClaw only reads inside the selected target.`, "high"),
+    ]);
+  }
+
   const lines = readLines(abs);
   if (!lines) {
     return emptyPackage(req, now, ws, `file \`${req.path}\` could not be read in \`${req.repo}\``, [
@@ -307,12 +319,19 @@ export function explainSelection(req: ExplainRequest, ws: WorkspaceIntel, opts: 
     knownUnknownIds: knownUnknowns.map((u) => u.id),
   });
 
-  const explanation = buildExplanation(req, enclosing, callees, callers, related, selected.length);
+  // --- module / service area the file likely belongs to ---
+  // Prefer a detected service whose evidence is this file; else the top-level dir.
+  const svcForFile = repo.services.find((s) => s.value.evidence === req.path);
+  const topDir = req.path.includes("/") ? req.path.split("/")[0] : null;
+  const moduleArea = svcForFile ? `${svcForFile.value.name} (${svcForFile.value.kind} service)` : topDir;
+
+  const explanation = buildExplanation(req, enclosing, callees, callers, related, selected.length, moduleArea);
 
   return {
     request: req,
     explanation,
     enclosingSymbol: enclosing,
+    moduleArea,
     nearbySymbols: nearby,
     likelyCallers: callers,
     likelyCallees: callees,
@@ -341,12 +360,17 @@ function buildExplanation(
   callers: RefHit[],
   related: RelatedIntel,
   lineCount: number,
+  moduleArea: string | null,
 ): string {
   const parts: string[] = [];
+  if (req.intent) parts.push(`You asked: "${req.intent}". Here's what the code shows (grounded in the file + scan):`);
+
   const where = enclosing
     ? `This selection is inside \`${enclosing.name}\` (a ${enclosing.kind}) in \`${req.path}\`.`
     : `This is a ${lineCount}-line selection in \`${req.path}\` that isn't inside a detected function/class.`;
   parts.push(where);
+
+  if (moduleArea) parts.push(`The file lives in the **${moduleArea}** area of the project.`);
 
   if (enclosing?.signature) parts.push(`It's declared as: \`${enclosing.signature}\`.`);
 
@@ -361,10 +385,19 @@ function buildExplanation(
   } else if (enclosing) {
     parts.push("No callers were found by static search — it may be unused, called dynamically, or called from a repo that wasn't searched.");
   }
+  // Be explicit about the call-graph limitation (prompt 32 req #4) — never imply
+  // we know direct callers.
+  parts.push("Direct callers are **not yet known** (no call graph). Possible references can be searched in a later feature; confidence is limited until reference/call-graph support exists.");
 
   if (related.routes.length) {
     parts.push(`This file declares route(s): ${related.routes.slice(0, 4).map((r) => `\`${r.method} ${r.pathPattern}\``).join(", ")} — so this code likely runs when those endpoints are hit.`);
   }
+
+  // What to inspect next (req #3).
+  const next = enclosing
+    ? `Next, inspect: the definition of ${callees.slice(0, 2).map((c) => `\`${c.name}\``).join(" / ") || "the functions it calls"}, and where \`${enclosing.name}\` is referenced.`
+    : "Next, inspect the enclosing function/file and the symbols used in this range.";
+  parts.push(next);
 
   const lens = req.experienceLevel ?? "junior";
   if (lens === "junior" || lens === "new-to-repo") {
@@ -401,6 +434,7 @@ function emptyPackage(
     request: req,
     explanation,
     enclosingSymbol: null,
+    moduleArea: null,
     nearbySymbols: [],
     likelyCallers: [],
     likelyCallees: [],

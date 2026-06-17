@@ -138,4 +138,31 @@ describe("explainSelection", () => {
     // line 1 is an import — no enclosing function above it
     expect(pkg.knownUnknowns.some((u) => u.title.includes("enclosing"))).toBe(true);
   });
+
+  // --- prompt 32 additions ---
+
+  it("rejects path traversal outside the target project", () => {
+    const pkg = explainSelection(
+      { repo: repoName, path: "../../../../etc/passwd", startLine: 1, endLine: 1 },
+      ws,
+      { generatedAt: FIXED_NOW, repoFiles: listRepoFiles(root) },
+    );
+    expect(pkg.explanation).toMatch(/outside the target project/);
+    expect(pkg.knownUnknowns.some((u) => u.title === "path traversal rejected")).toBe(true);
+    expect(pkg.selectedCode).toBe(""); // nothing was read
+  });
+
+  it("reports the module/service area + honest call-graph limitation + next steps", () => {
+    const pkg = explainSelection(
+      { repo: repoName, path: "src/server.ts", startLine: 4, endLine: 6, intent: "what does this do?" },
+      ws,
+      { generatedAt: FIXED_NOW, repoFiles: listRepoFiles(root) },
+    );
+    // src/server.ts is detected as a service, so moduleArea prefers the service
+    // area over the bare top-level dir.
+    expect(pkg.moduleArea).toMatch(/service|src/);
+    expect(pkg.explanation).toMatch(/You asked: "what does this do\?"/);
+    expect(pkg.explanation).toMatch(/Direct callers are \*\*not yet known\*\*/);
+    expect(pkg.explanation).toMatch(/Next, inspect/);
+  });
 });

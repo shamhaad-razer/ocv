@@ -371,6 +371,10 @@ export interface ExplainRequest {
   endLine: number;
   /** Optional: who's asking, so explanation depth can adapt (10-...md, G1r). */
   experienceLevel?: "new-to-repo" | "junior" | "mid" | "senior";
+  /** Optional free-text question / user intent to focus the explanation. */
+  intent?: string;
+  /** Optional selected code text (UI may send it; resolution still reads the file). */
+  selectedText?: string;
 }
 
 /** A symbol detected near/at the selection (heuristic, not a real parser). */
@@ -411,6 +415,8 @@ export interface ExplainPackage {
   explanation: string;
   /** The enclosing symbol if one was detected. */
   enclosingSymbol: SymbolHit | null;
+  /** The module/service area the file likely belongs to (top dir / service). */
+  moduleArea: string | null;
   /** Other symbols detected within/near the selection. */
   nearbySymbols: SymbolHit[];
   /** Likely callers found by static search (heuristic). */

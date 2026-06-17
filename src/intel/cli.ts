@@ -71,6 +71,8 @@ interface Args {
   selection?: string;
   /** explain: experience level for the explanation lens. */
   level?: ExplainRequest["experienceLevel"];
+  /** explain: optional free-text question / user intent. */
+  intent?: string;
   /** verify: explicit command to verify (e.g. "vitest run"). */
   run?: string;
   /** verify: repo the --run command belongs to. */
@@ -144,6 +146,7 @@ function parseArgs(argv: string[]): Args {
     checkPorts,
     selection: positionals[0],
     level,
+    intent: flags.get("intent") || undefined,
     run: flags.get("run") || undefined,
     runRepo: flags.get("repo") || undefined,
     confirmed: bools.has("confirm"),
@@ -170,12 +173,12 @@ function validateTarget(targetPath: string): string | null {
 }
 
 /** Parse "<repo>/<path>:<startLine>-<endLine>" (or ":<line>") into an ExplainRequest. */
-function parseExplainTarget(target: string, level?: ExplainRequest["experienceLevel"]): ExplainRequest | null {
+function parseExplainTarget(target: string, level?: ExplainRequest["experienceLevel"], intent?: string): ExplainRequest | null {
   const m = /^([^/]+)\/(.+):(\d+)(?:-(\d+))?$/.exec(target);
   if (!m) return null;
   const startLine = parseInt(m[3], 10);
   const endLine = m[4] ? parseInt(m[4], 10) : startLine;
-  return { repo: m[1], path: m[2], startLine, endLine, experienceLevel: level };
+  return { repo: m[1], path: m[2], startLine, endLine, experienceLevel: level, intent };
 }
 
 /** Manifest/marker files that make a directory "look like a repo". */
@@ -483,7 +486,7 @@ function runExplain(args: Args, now: number): void {
     console.error('[explain] usage: explain "<repo>/<path>:<startLine>-<endLine>" --target <project-path> [--level junior]');
     process.exit(1);
   }
-  const req = parseExplainTarget(args.selection, args.level);
+  const req = parseExplainTarget(args.selection, args.level, args.intent);
   if (!req) {
     console.error(`[explain] could not parse selection "${args.selection}" — expected "<repo>/<path>:<start>-<end>"`);
     process.exit(1);
