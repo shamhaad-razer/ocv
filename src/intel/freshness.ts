@@ -111,7 +111,7 @@ function collectFileHashes(repo: RepoIntel): { ref: string; hash: string }[] {
   const seen = new Map<string, string>();
   const add = (fh: { ref: string; hash: string }[]) => fh.forEach((h) => { if (!seen.has(h.ref)) seen.set(h.ref, h.hash); });
   add(repo.grounding.fileHashes);
-  const arrays = [repo.packageFiles, repo.docFiles, repo.scripts, repo.services, repo.routes, repo.envFiles, repo.deployFiles, repo.envVars, repo.importantDirs];
+  const arrays = [repo.packageFiles, repo.docFiles, repo.scripts, repo.services, repo.routes, repo.symbols, repo.envFiles, repo.deployFiles, repo.envVars, repo.importantDirs];
   for (const arr of arrays) for (const f of arr) add(f.grounding.fileHashes);
   return [...seen].map(([ref, hash]) => ({ ref, hash }));
 }

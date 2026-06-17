@@ -15,6 +15,8 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { buildGrounding, hashFile } from "./grounding.js";
+import { findReferences } from "./references.js";
+import type { SymbolReference } from "./types.js";
 import type {
   Confidence,
   ExplainPackage,
@@ -273,6 +275,24 @@ export function explainSelection(req: ExplainRequest, ws: WorkspaceIntel, opts: 
     callers = findCallers(repo.rootPath, repoFiles, enclosing.name);
   }
 
+  // --- stored symbols whose definition falls inside the selected range ---
+  const symbolsInRange = repo.symbols
+    .filter((s) => {
+      if (s.value.file !== req.path) return false;
+      const ln = parseInt(s.value.locator.split(":").pop() ?? "0", 10);
+      return ln >= start && ln <= end;
+    })
+    .map((s) => ({ name: s.value.name, kind: s.value.kind, locator: s.value.locator, signature: s.value.signature }));
+
+  // --- confidence-classified references to the enclosing symbol (prompt 33) ---
+  // Uses the index's known definition site so the def is classified high; other
+  // hits are call/import (medium) or mention (low). Never asserted as a proven call.
+  let references: SymbolReference[] = [];
+  if (enclosing && repoFiles.length) {
+    const defSym = repo.symbols.find((s) => s.value.name === enclosing.name);
+    references = findReferences(repo.rootPath, repoFiles, enclosing.name, defSym?.value.locator).references;
+  }
+
   // --- related index entities ---
   const related = relatedFromIndex(repo, req.path);
 
@@ -335,6 +355,8 @@ export function explainSelection(req: ExplainRequest, ws: WorkspaceIntel, opts: 
     nearbySymbols: nearby,
     likelyCallers: callers,
     likelyCallees: callees,
+    symbolsInRange,
+    references,
     related,
     selectedCode,
     evidence: {
@@ -438,6 +460,8 @@ function emptyPackage(
     nearbySymbols: [],
     likelyCallers: [],
     likelyCallees: [],
+    symbolsInRange: [],
+    references: [],
     related: { routes: [], scripts: [], envVars: [], services: [] },
     selectedCode: "",
     evidence: { sources: [], scanGeneratedAt: ws.generatedAt, scanVersion: ws.scanVersion, baseCommit: null },

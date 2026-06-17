@@ -5,7 +5,7 @@
 // parsing (no dependency) — honest about what it can't parse.
 
 import type { DetectedScript, DetectedService, Finding } from "../types.js";
-import { type Adapter, type AdapterContext, type AdapterResult, categorizeScript, detectRoutesIn, emptyResult } from "./types.js";
+import { type Adapter, type AdapterContext, type AdapterResult, categorizeScript, detectRoutesIn, emptyResult, extractSymbolsIn } from "./types.js";
 
 /** Extract `name = "value"` entries under a given TOML [section]. Minimal, no deps. */
 function tomlSectionEntries(toml: string, section: string): { name: string; value: string }[] {
@@ -104,6 +104,7 @@ export const pythonAdapter: Adapter = {
     const { scripts, verifiable } = detectPythonScripts(ctx);
     res.scripts = scripts;
     res.routes = detectRoutesIn(ctx, /\.py$/);
+    res.symbols = extractSymbolsIn(ctx, /\.py$/);
     res.services = detectPythonServices(ctx);
     res.runtimeVerifiable = verifiable;
     res.evidence = ["pyproject.toml", "requirements.txt", "uv.lock"].filter((f) => ctx.has(f)).map((f) => ctx.fileSource(f));

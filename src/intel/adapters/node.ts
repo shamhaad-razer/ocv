@@ -2,7 +2,7 @@
 // package.json scripts, JS/TS route heuristics, and node/Next service signals.
 
 import type { DetectedScript, DetectedService, Finding } from "../types.js";
-import { type Adapter, type AdapterContext, type AdapterResult, categorizeScript, detectRoutesIn, emptyResult } from "./types.js";
+import { type Adapter, type AdapterContext, type AdapterResult, categorizeScript, detectRoutesIn, emptyResult, extractSymbolsIn } from "./types.js";
 
 function parsePackageJsonScripts(ctx: AdapterContext): Finding<DetectedScript>[] {
   const out: Finding<DetectedScript>[] = [];
@@ -50,6 +50,7 @@ export const nodeAdapter: Adapter = {
     res.scripts = parsePackageJsonScripts(ctx);
     res.routes = detectRoutesIn(ctx, /\.(ts|tsx|js|mjs)$/);
     res.services = detectNodeServices(ctx);
+    res.symbols = extractSymbolsIn(ctx, /\.(ts|tsx|js|mjs)$/);
     res.evidence = [ctx.fileSource("package.json")];
     if (res.scripts.length === 0) {
       res.knownUnknowns.push({

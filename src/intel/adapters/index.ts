@@ -7,6 +7,7 @@ import type {
   DetectedRoute,
   DetectedScript,
   DetectedService,
+  DetectedSymbol,
   Finding,
   KnownUnknown,
 } from "../types.js";
@@ -29,6 +30,7 @@ export interface MergedAdapterOutput {
   scripts: Finding<DetectedScript>[];
   routes: Finding<DetectedRoute>[];
   services: Finding<DetectedService>[];
+  symbols: Finding<DetectedSymbol>[];
   knownUnknowns: KnownUnknown[];
   /** Ids of adapters that applied (for reporting / the repo map). */
   appliedAdapters: string[];
@@ -43,6 +45,7 @@ export function runAdapters(ctx: AdapterContext): MergedAdapterOutput {
   const scripts: Finding<DetectedScript>[] = [];
   const routes: Finding<DetectedRoute>[] = [];
   const services: Finding<DetectedService>[] = [];
+  const symbols: Finding<DetectedSymbol>[] = [];
   const knownUnknowns: KnownUnknown[] = [];
   const appliedAdapters: string[] = [];
   let bestQuality: Quality | null = null;
@@ -52,6 +55,7 @@ export function runAdapters(ctx: AdapterContext): MergedAdapterOutput {
   const seenScript = new Set<string>();
   const seenRoute = new Set<string>();
   const seenService = new Set<string>();
+  const seenSymbol = new Set<string>();
 
   for (const adapter of ADAPTERS) {
     let applies = false;
@@ -82,6 +86,10 @@ export function runAdapters(ctx: AdapterContext): MergedAdapterOutput {
       const k = sv.value.name;
       if (!seenService.has(k)) { seenService.add(k); services.push(sv); }
     }
+    for (const sy of r.symbols) {
+      const k = sy.value.locator; // one symbol per definition site
+      if (!seenSymbol.has(k)) { seenSymbol.add(k); symbols.push(sy); }
+    }
     knownUnknowns.push(...r.knownUnknowns);
   }
 
@@ -101,5 +109,5 @@ export function runAdapters(ctx: AdapterContext): MergedAdapterOutput {
     });
   }
 
-  return { scripts, routes, services, knownUnknowns, appliedAdapters, bestQuality, runtimeVerifiable };
+  return { scripts, routes, services, symbols, knownUnknowns, appliedAdapters, bestQuality, runtimeVerifiable };
 }

@@ -79,6 +79,7 @@ describe("deriveSetupCompatibility", () => {
           ],
           services: [],
           routes: [],
+          symbols: [],
           envFiles: [],
           envVars: [],
           deployFiles: [],

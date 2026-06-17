@@ -228,6 +228,7 @@ export function scanRepo(repoRoot: string, opts: ScanOptions): RepoIntel {
   const scripts = adapted.scripts;
   const routes = adapted.routes;
   const services = adapted.services;
+  const symbols = adapted.symbols;
   // Fold in every adapter's own known-unknowns (each is honest about its gaps).
   for (const u of adapted.knownUnknowns) addUnknown(u);
 
@@ -360,6 +361,7 @@ export function scanRepo(repoRoot: string, opts: ScanOptions): RepoIntel {
     scripts,
     services,
     routes,
+    symbols,
     envFiles,
     envVars,
     deployFiles,

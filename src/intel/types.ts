@@ -111,6 +111,20 @@ export interface DetectedRoute {
   locator: string;
 }
 
+/** A symbol (function/class/etc.) extracted at scan time and stored in the index. */
+export interface DetectedSymbol {
+  name: string;
+  kind: "function" | "class" | "method" | "const" | "route" | "unknown";
+  /** "file:line" where it is defined. */
+  locator: string;
+  /** Repo-relative file the symbol is defined in. */
+  file: string;
+  /** Whether it appears exported (TS/JS `export`, Python module-top def). */
+  exported: boolean;
+  /** Trimmed declaration line (evidence). */
+  signature?: string;
+}
+
 export interface DetectedEnvVar {
   /** Name only — values are never read or stored (S6). */
   name: string;
@@ -185,6 +199,8 @@ export interface RepoIntel {
   scripts: Finding<DetectedScript>[];
   services: Finding<DetectedService>[];
   routes: Finding<DetectedRoute>[];
+  /** Symbols extracted at scan time (functions/classes/exports), grounded per file. */
+  symbols: Finding<DetectedSymbol>[];
   envFiles: Finding<string>[];
   envVars: Finding<DetectedEnvVar>[];
   deployFiles: Finding<string>[];
@@ -423,6 +439,10 @@ export interface ExplainPackage {
   likelyCallers: RefHit[];
   /** Likely callees referenced inside the selection (heuristic). */
   likelyCallees: RefHit[];
+  /** Indexed symbols whose definition falls inside the selected range. */
+  symbolsInRange: SymbolHit[];
+  /** Confidence-classified references to the enclosing symbol (call/import/mention). */
+  references: SymbolReference[];
   related: RelatedIntel;
   /** The raw selected lines (evidence; trimmed/capped). */
   selectedCode: string;
@@ -555,4 +575,34 @@ export interface VerificationStore {
   generatedAt: number;
   scanVersion: string;
   results: VerificationResult[];
+}
+
+// ----- Symbol references & call inference (prompt 33) -----
+
+/** Confidence that a textual hit is a real reference/call (never asserted as fact). */
+export type RefConfidence = "high" | "medium" | "low";
+
+/** One textual reference to a symbol, classified by how strongly it implies usage. */
+export interface SymbolReference {
+  /** "file:line" of the reference. */
+  locator: string;
+  /** Trimmed matched line (evidence). */
+  snippet: string;
+  /**
+   * "definition" = the symbol's own declaration; "call" = `name(` (likely a call);
+   * "import" = an import/require line; "mention" = bare textual occurrence.
+   */
+  kind: "definition" | "call" | "import" | "mention";
+  confidence: RefConfidence;
+}
+
+/** Result of searching the target for references to one symbol. */
+export interface ReferenceResult {
+  symbol: string;
+  /** All classified references found (capped). */
+  references: SymbolReference[];
+  /** Files searched (for transparency). */
+  filesSearched: number;
+  /** True if the search was truncated by the cap. */
+  truncated: boolean;
 }

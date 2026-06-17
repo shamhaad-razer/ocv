@@ -12,6 +12,7 @@ import type {
   DetectedRoute,
   DetectedScript,
   DetectedService,
+  DetectedSymbol,
   Finding,
   Grounding,
   KnownUnknown,
@@ -46,6 +47,8 @@ export interface AdapterResult {
   routes: Finding<DetectedRoute>[];
   /** Detected runnable/deployable services. */
   services: Finding<DetectedService>[];
+  /** Symbols extracted from source (functions/classes/exports). */
+  symbols: Finding<DetectedSymbol>[];
   /** Gaps THIS adapter is honest about (e.g. "scripts not parsed for lang X"). */
   knownUnknowns: KnownUnknown[];
   /** Source files that support this adapter's detections (for traceability). */
@@ -70,7 +73,57 @@ export interface Adapter {
 
 /** Helper: an empty result an adapter can spread into. */
 export function emptyResult(adapter: string, quality: Quality = "declared", runtimeVerifiable = false): AdapterResult {
-  return { adapter, scripts: [], routes: [], services: [], knownUnknowns: [], evidence: [], quality, runtimeVerifiable };
+  return { adapter, scripts: [], routes: [], services: [], symbols: [], knownUnknowns: [], evidence: [], quality, runtimeVerifiable };
+}
+
+/**
+ * Shared symbol extraction over source files matching `exts`. Heuristic (regex,
+ * not a parser) — honest: emitted symbols are "parsed" quality (we DID read the
+ * declaration line) but caller/callee relationships are NOT proven here. Captures
+ * functions, classes, methods, and exported consts across TS/JS/Python shapes.
+ */
+export function extractSymbolsIn(ctx: AdapterContext, exts: RegExp): Finding<DetectedSymbol>[] {
+  const out: Finding<DetectedSymbol>[] = [];
+  // name in group depending on the construct; `exported` from a leading `export`.
+  const patterns: { re: RegExp; kind: DetectedSymbol["kind"]; nameIdx: number }[] = [
+    { re: /^(\s*export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/, kind: "function", nameIdx: 2 },
+    { re: /^(\s*export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/, kind: "class", nameIdx: 2 },
+    { re: /^(\s*export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/, kind: "function", nameIdx: 2 },
+    { re: /^(\s*export\s+)?(?:const)\s+([A-Z][A-Z0-9_]*)\s*=/, kind: "const", nameIdx: 2 }, // SCREAMING_CASE consts
+    { re: /^(\s*)def\s+([A-Za-z_][\w]*)/, kind: "function", nameIdx: 2 }, // python def
+    { re: /^(\s*)class\s+([A-Za-z_][\w]*)/, kind: "class", nameIdx: 2 }, // python class
+  ];
+  const candidates = ctx.files.filter((f) => exts.test(f) && !f.includes("node_modules"));
+  const seen = new Set<string>();
+  for (const rel of candidates) {
+    const content = ctx.read(rel);
+    if (content == null || content.length > 600_000) continue;
+    const hash = ctx.fileSource(rel).hash;
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      for (const { re, kind, nameIdx } of patterns) {
+        const m = re.exec(line);
+        if (!m) continue;
+        const name = m[nameIdx];
+        if (!name) continue;
+        const locator = `${rel}:${i + 1}`;
+        if (seen.has(locator)) continue;
+        seen.add(locator);
+        // python: a def/class indented under another is a method/nested; mark exported
+        // = top-level (no indent) for py, or has `export` for ts/js.
+        const indented = /^\s+/.test(line);
+        const exported = /\bexport\b/.test(m[1] ?? "") || (rel.endsWith(".py") && !indented);
+        const symKind: DetectedSymbol["kind"] = rel.endsWith(".py") && indented && kind === "function" ? "method" : kind;
+        out.push({
+          value: { name, kind: symKind, locator, file: rel, exported, signature: line.trim().slice(0, 160) },
+          grounding: ctx.ground([{ kind: "file", ref: rel, locator, hash }], "parsed"),
+        });
+        break; // one symbol per line
+      }
+    }
+  }
+  return out;
 }
 
 /** Shared script categorizer (command-book categories, 07-...md §0). */
