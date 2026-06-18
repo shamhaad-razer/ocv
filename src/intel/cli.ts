@@ -89,6 +89,7 @@ import {
   type UserPreferences,
 } from "./memory.js";
 import { projectIdFor } from "./storage.js";
+import { assertInsideProjectsRoot, expandTilde, isInsideProjectsRoot } from "./projects-root.js";
 import type { ContextMode, ContextPackRequest, EnvironmentProfile, ExplainRequest, KnownUnknown, MachineEnv, OsVariant, VerificationStore, WorkspaceIntel } from "./types.js";
 
 interface Args {
@@ -163,6 +164,8 @@ function parseArgs(argv: string[]): Args {
   // it's not an existing path, try resolving it against the host registry.
   let targetFlag = flags.get("target") ?? flags.get("root");
   const targetExplicit = targetFlag != null;
+  // Expand a leading ~ so `--target ~/Projects/app` works (resolve() alone won't).
+  if (targetFlag) targetFlag = expandTilde(targetFlag);
   if (targetFlag && !existsSync(targetFlag)) {
     const hit = resolveTarget(loadRegistry(), targetFlag);
     if (hit) targetFlag = hit.targetPath;
@@ -863,9 +866,17 @@ function runTargets(args: Args, now: number): void {
       console.error("[targets] usage: targets add <path> [--name <name>] [--desc <description>]");
       process.exit(1);
     }
-    const targetPath = resolve(raw);
+    const targetPath = resolve(expandTilde(raw));
+    // Policy: only register projects inside ~/Projects (prompt 50).
+    const rootErr = assertInsideProjectsRoot(targetPath);
+    if (rootErr) {
+      if (args.json) { process.stdout.write(JSON.stringify({ ok: false, error: rootErr }) + "\n"); return; }
+      console.error(`[targets] ${rootErr}`);
+      process.exit(1);
+    }
     const err = validateTargetPath(targetPath);
     if (err) {
+      if (args.json) { process.stdout.write(JSON.stringify({ ok: false, error: err }) + "\n"); return; }
       console.error(`[targets] ${err}`);
       process.exit(1);
     }
@@ -890,8 +901,12 @@ function runTargets(args: Args, now: number): void {
   }
 
   if (sub === "list") {
+    // Tag each entry with whether it's still inside ~/Projects (prompt 50). Entries
+    // outside the root are kept in the registry but reported unavailable — the UI
+    // shows them as blocked and refuses to scan/select them, never auto-deletes.
+    const tagged = reg.projects.map((p) => ({ ...p, available: isInsideProjectsRoot(p.targetPath) }));
     if (args.json) {
-      process.stdout.write(JSON.stringify({ ok: true, projects: reg.projects }) + "\n");
+      process.stdout.write(JSON.stringify({ ok: true, projects: tagged }) + "\n");
       return;
     }
     if (reg.projects.length === 0) {
@@ -899,11 +914,12 @@ function runTargets(args: Args, now: number): void {
       return;
     }
     console.log(`[targets] ${reg.projects.length} registered project(s):`);
-    for (const p of reg.projects) {
+    for (const p of tagged) {
       const scanned = p.lastScannedAt ? new Date(p.lastScannedAt).toISOString() : "never";
       const ku = p.knownUnknownsSummary ? `${p.knownUnknownsSummary.total} unknowns` : "—";
       const fr = p.freshness ? `freshness:${p.freshness.overall}` : "freshness:unchecked";
-      console.log(`  ${p.id}  ${p.displayName}  [${p.repoType}]  scanned:${scanned}  ${fr}  ${ku}`);
+      const flag = p.available ? "" : "  ⚠ OUTSIDE ~/Projects (unavailable — move/clone under ~/Projects)";
+      console.log(`  ${p.id}  ${p.displayName}  [${p.repoType}]  scanned:${scanned}  ${fr}  ${ku}${flag}`);
       console.log(`        ${p.targetPath}`);
     }
     return;
@@ -1604,9 +1620,31 @@ function runMirror(args: Args, now: number): void {
   process.stdout.write(md + "\n");
 }
 
+// Commands that READ a specific target project's files (vs. host-only commands
+// like prefs/env, or registry-management commands like targets which gate their
+// own refs). When a target is explicitly given to one of these, it MUST be inside
+// ~/Projects (prompt 50). `targets` is excluded here because runTargets enforces
+// the rule per-subcommand (add enforces; remove/show must still work on
+// outside-root entries so the user can untrack them).
+const TARGET_READING_CMDS = new Set([
+  "scan", "check", "diff", "docs", "explain", "report", "verify",
+  "freshness", "context", "deploy", "dashboard", "mirror",
+]);
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now(); // injected here at the edge ONLY
+  // Enforce the ~/Projects policy for target-reading commands when a target was
+  // explicitly supplied (path OR a registered id/name already resolved to its
+  // path in parseArgs). Host-only/registry commands are exempt.
+  if (args.targetExplicit && TARGET_READING_CMDS.has(args.cmd)) {
+    const err = assertInsideProjectsRoot(args.targetPath);
+    if (err) {
+      if (args.json) process.stdout.write(JSON.stringify({ ok: false, error: err }) + "\n");
+      else console.error(`[${args.cmd}] ${err}`);
+      process.exit(1);
+    }
+  }
   if (args.cmd === "check") runCheck(args);
   else if (args.cmd === "diff") runDiff(args);
   else if (args.cmd === "docs") runDocs(args, now);

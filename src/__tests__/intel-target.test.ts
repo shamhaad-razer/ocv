@@ -11,13 +11,19 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 const repoRoot = join(__dirname, "..", "..");
 const cli = join(repoRoot, "dist-scan", "cli.mjs");
 
+let projectsRoot: string; // stand-in for ~/Projects (via OPENCLAW_PROJECTS_ROOT)
 let target: string;
 let out: string;
 
 function run(args: string[], env?: NodeJS.ProcessEnv): { code: number; stdout: string; stderr: string } {
   // spawnSync captures BOTH streams regardless of exit code (the CLI logs
-  // progress to stderr, JSON to stdout).
-  const r = spawnSync("node", [cli, ...args], { encoding: "utf-8", env: { ...process.env, ...env } });
+  // progress to stderr, JSON to stdout). OPENCLAW_PROJECTS_ROOT points the
+  // ~/Projects policy (prompt 50) at our temp workspace so the test targets,
+  // which live under it, are allowed.
+  const r = spawnSync("node", [cli, ...args], {
+    encoding: "utf-8",
+    env: { ...process.env, OPENCLAW_PROJECTS_ROOT: projectsRoot, ...env },
+  });
   return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
@@ -25,7 +31,9 @@ beforeAll(() => {
   // Build the CLI bundle so the subprocess test runs the current source.
   buildSync("node", [join(repoRoot, "build-scan.mjs")], { stdio: "ignore" });
 
-  target = mkdtempSync(join(tmpdir(), "ext-target-"));
+  // The allowed projects root + a target INSIDE it (prompt 50 policy).
+  projectsRoot = mkdtempSync(join(tmpdir(), "vk-projects-"));
+  target = join(projectsRoot, "ext-target");
   mkdirSync(join(target, "svc", "src"), { recursive: true });
   writeFileSync(join(target, "svc", "package.json"), JSON.stringify({ name: "svc", scripts: { test: "vitest run" } }));
   writeFileSync(join(target, "svc", "src", "x.ts"), 'export function f() { return g(); }\n');
@@ -34,15 +42,30 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  rmSync(target, { recursive: true, force: true });
+  rmSync(projectsRoot, { recursive: true, force: true });
   rmSync(out, { recursive: true, force: true });
 });
 
 describe("CLI host-vs-target separation", () => {
   it("validates that a non-existent target is rejected", () => {
-    const r = run(["scan", "--target", "/no/such/path/xyz", "--out", out]);
+    // Inside the allowed root but non-existent → fails on existence (not policy).
+    const r = run(["scan", "--target", join(projectsRoot, "no-such-xyz"), "--out", out]);
     expect(r.code).not.toBe(0);
     expect(r.stderr).toMatch(/does not exist/);
+  });
+
+  it("rejects a target OUTSIDE ~/Projects with a move/clone message (prompt 50)", () => {
+    const outside = mkdtempSync(join(tmpdir(), "vk-outside-"));
+    try {
+      mkdirSync(join(outside, "src"), { recursive: true });
+      writeFileSync(join(outside, "package.json"), JSON.stringify({ name: "x" }));
+      const r = run(["scan", "--target", outside, "--out", out]);
+      expect(r.code).not.toBe(0);
+      expect(r.stderr).toMatch(/only scans projects inside/i);
+      expect(r.stderr).toMatch(/move or clone/i);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("scans an external target and writes the index to HOST --out (not the target)", () => {
@@ -88,7 +111,7 @@ describe("CLI host-vs-target separation", () => {
   // Regression (prompt 25): a SINGLE-REPO target — the target path IS the repo,
   // not a parent of repos. Previously "no repos found"; now detected as ".".
   it("scans a single-repo target (target path itself is the repo)", () => {
-    const single = mkdtempSync(join(tmpdir(), "single-repo-"));
+    const single = join(projectsRoot, "single-repo"); // inside the allowed root
     const singleOut = mkdtempSync(join(tmpdir(), "single-out-"));
     try {
       mkdirSync(join(single, "src"), { recursive: true });
